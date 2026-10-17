@@ -1,9 +1,11 @@
 (() => {
   // src/util.js
+  var $ = (s, r = document) => r.querySelector(s);
   var $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   var EARTH = 63710088e-1;
   var rad = (d) => d * Math.PI / 180;
   var deg = (r) => r * 180 / Math.PI;
+  var clamp = (v, a, b) => v < a ? a : v > b ? b : v;
   function hav(a, b) {
     const dLat = rad(b[1] - a[1]), dLng = rad(b[0] - a[0]);
     const s = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[1])) * Math.cos(rad(b[1])) * Math.sin(dLng / 2) ** 2;
@@ -577,17 +579,113 @@
     return cv;
   }
 
+  // src/traffic.js
+  var RAMP = [[0, [34, 197, 94]], [0.35, [250, 204, 21]], [0.65, [249, 115, 22]], [0.85, [239, 68, 68]], [1, [153, 27, 27]]];
+  function rampColor(l) {
+    l = clamp(l, 0, 1);
+    for (let i = 1; i < RAMP.length; i++) {
+      const [a, ca] = RAMP[i - 1], [b, cb] = RAMP[i];
+      if (l <= b) {
+        const t = (l - a) / (b - a || 1);
+        const c = ca.map((v, k) => Math.round(v + (cb[k] - v) * t));
+        return `rgb(${c[0]},${c[1]},${c[2]})`;
+      }
+    }
+    return "rgb(153,27,27)";
+  }
+  function baseLoad(date) {
+    const h2 = date.getHours() + date.getMinutes() / 60;
+    const g = (m, s, a) => a * Math.exp(-((h2 - m) ** 2) / (2 * s * s));
+    let v = 0.1 + g(8, 1.1, 0.7) + g(13.5, 1.2, 0.5) + g(18.2, 1.5, 0.78) + g(21, 1.2, 0.25);
+    if (date.getDay() === 5) v *= 0.7;
+    return clamp(v, 0.05, 0.95);
+  }
+  function hash(n) {
+    n = n << 13 ^ n;
+    return 1 - (n * (n * n * 15731 + 789221) + 1376312589 & 2147483647) / 1073741824;
+  }
+  function vnoise(x, seed) {
+    const i = Math.floor(x), f = x - i, s = f * f * (3 - 2 * f);
+    return (hash(i * 131 + seed) * (1 - s) + hash((i + 1) * 131 + seed) * s) * 0.5 + 0.5;
+  }
+  function estimate(route2, mode2, date = /* @__PURE__ */ new Date()) {
+    const total = route2.total || route2.dist || 1, base = baseLoad(date);
+    const seed = Math.floor(Math.abs(route2.coords[0][0] * 1e3 + route2.coords[0][1] * 700)) % 9973;
+    const S = route2.steps, jun = S.filter((s) => s.type !== "depart" && s.type !== "arrive").map((s) => s.startAlong);
+    const N2 = Math.max(24, Math.min(140, Math.round(total / 80)));
+    const raw = [];
+    for (let i = 0; i <= N2; i++) {
+      const d = total * i / N2;
+      let k = 0;
+      for (let j = 0; j < S.length; j++) if (S[j].startAlong <= d) k = j;
+      const st = S[k] || { dist: 1, dur: 1 };
+      const sp = st.dist / (st.dur || 1);
+      const urban = sp < 9 ? 1 : sp < 17 ? 0.8 : 0.5;
+      let near = 0;
+      for (const a of jun) {
+        const dd = Math.abs(d - a);
+        if (dd < 140) near = Math.max(near, 1 - dd / 140);
+      }
+      const n = 0.65 * vnoise(d / 700, seed) + 0.35 * vnoise(d / 230, seed + 17);
+      raw.push(clamp(base * urban * (0.35 + 1.15 * n) + near * 0.28 * base * 1.4, 0, 1));
+    }
+    const L = raw.map((_, i) => {
+      let s = 0, c = 0;
+      for (let j = -2; j <= 2; j++) {
+        const v = raw[i + j];
+        if (v != null) {
+          s += v;
+          c++;
+        }
+      }
+      return s / c;
+    });
+    const stops = L.map((l, i) => [i / N2, l]);
+    let dur = 0;
+    for (let i = 0; i < N2; i++) {
+      const d = total * i / N2;
+      let k = 0;
+      for (let j = 0; j < S.length; j++) if (S[j].startAlong <= d) k = j;
+      const st = S[k];
+      const seg = st && st.dist > 0 ? st.dur * (total / N2) / st.dist : route2.dur / N2;
+      const lv = (L[i] + L[i + 1]) / 2;
+      dur += seg * (1 + (mode2 === "moto" ? 0.9 : 1.7) * lv) * (mode2 === "moto" ? 0.88 : 1);
+    }
+    const avg = L.reduce((a, b) => a + b, 0) / L.length;
+    const label = avg < 0.2 ? "\u0633\u0644\u0633" : avg < 0.4 ? "\u062E\u0641\u064A\u0641" : avg < 0.6 ? "\u0645\u062A\u0648\u0633\u0637" : "\u0643\u062B\u064A\u0641";
+    return { stops, avg, dur, delay: Math.max(0, dur - route2.dur), label };
+  }
+  function gradientExpr(stops) {
+    const e = ["interpolate", ["linear"], ["line-progress"]];
+    let last = -1;
+    stops.forEach(([p, l], i) => {
+      let q = i === 0 ? 0 : i === stops.length - 1 ? 1 : p;
+      if (q <= last) q = last + 1e-4;
+      last = q;
+      e.push(q, rampColor(l));
+    });
+    return e;
+  }
+  var solidGradient = (c) => ["interpolate", ["linear"], ["line-progress"], 0, c, 1, c];
+
   // src/main.js
   var maplibregl = window.maplibregl;
-  var DEF = { voice: true, buildings: true, terrain: true, style: "liberty", headingUp: true, radius: 2e3, recent: [] };
-  var ST = store("mp_settings_v1", DEF);
+  var APP_VERSION = "2.0";
+  var lowEnd = (navigator.hardwareConcurrency || 4) <= 4 || (navigator.deviceMemory || 4) <= 2;
+  var DEF = { voice: true, buildings: true, terrain: !lowEnd, style: "liberty", headingUp: true, radius: 2e3, recent: [] };
+  var ST = store("mp_settings_v2", DEF);
   if (!Array.isArray(ST.recent)) ST.recent = [];
   var STYLES = { liberty: "https://tiles.openfreemap.org/styles/liberty", bright: "https://tiles.openfreemap.org/styles/bright", positron: "https://tiles.openfreemap.org/styles/positron" };
   var DEM = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
   var FALLBACK_CENTER = [13.1913, 32.8872];
-  var OWN = /* @__PURE__ */ new Set(["car-body", "car-shadow", "car-halo", "route-casing", "route-line", "poi-pillar", "hills", "mp-buildings"]);
+  var RT = "https://routing.openstreetmap.de/";
+  var NETS = { car: RT + "routed-car/route/v1/driving/", bike: RT + "routed-bike/route/v1/driving/", foot: RT + "routed-foot/route/v1/driving/" };
+  var OSRM_FALLBACK = "https://router.project-osrm.org/route/v1/driving/";
+  var MODES = { car: { label: "\u0633\u064A\u0627\u0631\u0629", ico: "i-car", net: "car", color: "#1a73e8" }, moto: { label: "\u062F\u0631\u0627\u062C\u0629 \u0646\u0627\u0631\u064A\u0629", ico: "i-moto", net: "car", color: "#1a73e8" }, bike: { label: "\u062F\u0631\u0627\u062C\u0629 \u0647\u0648\u0627\u0626\u064A\u0629", ico: "i-bike", net: "bike", color: "#16a34a" }, foot: { label: "\u0645\u0634\u064A\u0627\u064B", ico: "i-walk", net: "foot", color: "#7c3aed" } };
+  var OWN = /* @__PURE__ */ new Set(["car-body", "car-shadow", "car-halo", "route-casing", "route-line", "poi-pillar", "hills", "mp-buildings", "me-halo", "me-dot"]);
   var params = new URLSearchParams(location.search);
   var SIM_SPEED = +params.get("simspeed") || 16;
+  var HAZ = { pothole: "\u062D\u0641\u0631\u064A\u0627\u062A / \u062D\u0641\u0631\u0629", water: "\u062A\u062C\u0645\u0639 \u0645\u064A\u0627\u0647", bump: "\u0645\u0637\u0628 \u0639\u0634\u0648\u0627\u0626\u064A", nosidewalk: "\u0644\u0627 \u064A\u0648\u062C\u062F \u0631\u0635\u064A\u0641", crash: "\u062D\u0627\u062F\u062B / \u0639\u0627\u0626\u0642", police: "\u0646\u0642\u0637\u0629 \u062A\u0641\u062A\u064A\u0634" };
   function h(tag, attrs, ...kids) {
     const e = document.createElement(tag);
     for (const k in attrs || {}) {
@@ -623,6 +721,18 @@
       t = setTimeout(() => fn(...a), ms);
     };
   };
+  async function getJSON(url, ms = 1e4, signal) {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), ms);
+    if (signal) signal.addEventListener("abort", () => c.abort());
+    try {
+      const r = await fetch(url, { signal: c.signal, headers: { Accept: "application/json" } });
+      if (!r.ok) throw new Error("http " + r.status);
+      return await r.json();
+    } finally {
+      clearTimeout(t);
+    }
+  }
   var me = { has: false, lng: 0, lat: 0, hdg: 0, speed: 0, acc: 0 };
   var vis = { lng: 0, lat: 0, hdg: 0 };
   var map = null;
@@ -630,19 +740,26 @@
   var northOnly = false;
   var dest = null;
   var route = null;
+  var mode = "car";
+  var routes = {};
   var destMarker = null;
   var poiState = null;
   var poiMarkers = [];
-  var selPOI = null;
+  var hazMarkers = [];
   var navActive = false;
   var simOn = false;
   var simTimer = null;
   var watchId = null;
   var compassHeading = null;
   var lastFixT = 0;
+  var lastFixWall = 0;
   var lastReroute = 0;
   var wakeLock = null;
   var deferredInstall = null;
+  var swReg = null;
+  var updating = false;
+  var lastAlong = null;
+  var warned = /* @__PURE__ */ new Set();
   var nav = new Navigator({ speak: (t) => speak(t), arrive: () => onArrive() });
   var lastPos = (() => {
     try {
@@ -651,9 +768,8 @@
       return null;
     }
   })();
-  function fallbackStyle() {
-    return { version: 8, name: "offline", sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#dfe7ef" } }] };
-  }
+  var carMode = () => navActive && (mode === "car" || mode === "moto");
+  var fallbackStyle = () => ({ version: 8, name: "offline", sources: {}, layers: [{ id: "bg", type: "background", paint: { "background-color": "#dfe7ef" } }] });
   function enhanceStyle(j) {
     try {
       const vs = Object.keys(j.sources || {}).find((k) => j.sources[k].type === "vector");
@@ -673,7 +789,7 @@
           "source-layer": "building",
           minzoom: 14,
           layout: { visibility: ST.buildings ? "visible" : "none" },
-          paint: { "fill-extrusion-color": ["interpolate", ["linear"], ["coalesce", ["get", "render_height"], 5], 0, "#e6e1d8", 40, "#d3d8e2", 150, "#b9c4dc"], "fill-extrusion-height": ["coalesce", ["get", "render_height"], 6], "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0], "fill-extrusion-opacity": 0.92 }
+          paint: { "fill-extrusion-color": ["interpolate", ["linear"], ["coalesce", ["get", "render_height"], 5], 0, "#e6e1d8", 40, "#d3d8e2", 150, "#b9c4dc"], "fill-extrusion-height": ["coalesce", ["get", "render_height"], 6], "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0], "fill-extrusion-opacity": 0.93 }
         };
         j.layers.splice(i < 0 ? j.layers.length : i, 0, L);
       }
@@ -683,9 +799,8 @@
   }
   async function loadStyle(name) {
     try {
-      const r = await timeoutFetch(STYLES[name] || STYLES.liberty, {}, 8e3);
-      if (!r.ok) throw new Error("style");
-      return enhanceStyle(await r.json());
+      const j = await getJSON(STYLES[name] || STYLES.liberty, 8e3);
+      return enhanceStyle(j);
     } catch (e) {
       setStatus("\u062A\u0639\u0630\u0631 \u062A\u062D\u0645\u064A\u0644 \u0627\u0644\u062E\u0631\u064A\u0637\u0629 \u2014 \u064A\u0639\u0645\u0644 \u0627\u0644\u0648\u0636\u0639 \u0627\u0644\u0645\u062D\u062F\u0648\u062F");
       return fallbackStyle();
@@ -695,35 +810,52 @@
     const l = map.getStyle().layers.find((l2) => l2.type === "symbol");
     return l && l.id;
   };
+  var EMPTY = { type: "FeatureCollection", features: [] };
   function setupLayers() {
-    const E = { type: "FeatureCollection", features: [] };
+    try {
+      map.setLight({ anchor: "map", color: "#fff4dc", intensity: 0.42, position: [1.4, 215, 38] });
+      if (map.setSky) map.setSky({ "sky-color": "#6fb1f2", "horizon-color": "#eaf3ff", "fog-color": "#dde8f4", "sky-horizon-blend": 0.55, "horizon-fog-blend": 0.6, "fog-ground-blend": 0.25, "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 9, 1, 12, 0] });
+    } catch (e) {
+    }
     try {
       if (ST.terrain) {
         if (!map.getSource("dem")) map.addSource("dem", { type: "raster-dem", tiles: [DEM], encoding: "terrarium", tileSize: 256, maxzoom: 14, attribution: "Terrain \xA9 Mapzen / AWS" });
         if (!map.getLayer("hills")) map.addLayer({ id: "hills", type: "hillshade", source: "dem", paint: { "hillshade-exaggeration": 0.3, "hillshade-shadow-color": "#5a6a7c", "hillshade-highlight-color": "#ffffff" } }, firstSymbol() || void 0);
-        map.setTerrain({ source: "dem", exaggeration: 1.15 });
+        map.setTerrain({ source: "dem", exaggeration: 1.2 });
       } else {
         map.setTerrain(null);
       }
     } catch (e) {
       console.warn("terrain", e);
     }
-    for (const id of ["route-line", "route-casing", "poi-pillar"]) if (map.getLayer(id)) map.removeLayer(id);
-    for (const id of ["route", "poi"]) if (map.getSource(id)) map.removeSource(id);
-    map.addSource("route", { type: "geojson", data: E });
-    map.addSource("poi", { type: "geojson", data: E });
-    map.addLayer({ id: "route-casing", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 6, 18, 16], "line-opacity": 0.95 } });
-    map.addLayer({ id: "route-line", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#1a73e8", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3.5, 18, 10] } });
+    for (const id of ["route-line", "route-casing", "poi-pillar", "me-dot", "me-halo"]) if (map.getLayer(id)) map.removeLayer(id);
+    for (const id of ["route", "poi", "me"]) if (map.getSource(id)) map.removeSource(id);
+    map.addSource("route", { type: "geojson", data: EMPTY, lineMetrics: true });
+    map.addSource("poi", { type: "geojson", data: EMPTY });
+    map.addSource("me", { type: "geojson", data: EMPTY });
+    map.addLayer({ id: "route-casing", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 10, 7, 18, 19], "line-opacity": 0.96 } });
+    map.addLayer({ id: "route-line", type: "line", source: "route", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-width": ["interpolate", ["linear"], ["zoom"], 10, 4.5, 18, 12], "line-gradient": solidGradient("#1a73e8") } });
     map.addLayer({ id: "poi-pillar", type: "fill-extrusion", source: "poi", paint: { "fill-extrusion-color": ["get", "c"], "fill-extrusion-height": ["get", "h"], "fill-extrusion-base": 0, "fill-extrusion-opacity": 0.9 } });
+    map.addLayer({ id: "me-halo", type: "circle", source: "me", paint: { "circle-radius": 16, "circle-color": "#facc15", "circle-opacity": 0.28, "circle-pitch-alignment": "map" } });
+    map.addLayer({ id: "me-dot", type: "circle", source: "me", paint: { "circle-radius": 7, "circle-color": "#facc15", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2.5, "circle-pitch-alignment": "map" } });
     addCarLayers(map);
     pushRoute();
     pushPOI();
-    drawCar(true);
+    drawMe(true);
+  }
+  function setVisibleMe(car) {
+    for (const id of ["me-dot", "me-halo"]) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", car ? "none" : "visible");
   }
   function pushRoute() {
     const s = map && map.getSource("route");
     if (!s) return;
-    s.setData(route ? { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: route.coords } } : { type: "FeatureCollection", features: [] });
+    if (route) {
+      s.setData({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: route.coords } });
+      try {
+        map.setPaintProperty("route-line", "line-gradient", route.traffic ? gradientExpr(route.traffic.stops) : solidGradient(MODES[mode].color));
+      } catch (e) {
+      }
+    } else s.setData(EMPTY);
   }
   function pushPOI() {
     const s = map && map.getSource("poi");
@@ -731,31 +863,51 @@
     s.setData({ type: "FeatureCollection", features: poiState ? poiState.list.map((p) => ({ type: "Feature", properties: { c: CATS[p.cat].color, h: 34 }, geometry: { type: "Polygon", coordinates: [circlePoly(p.lng, p.lat, 7)] } })) : [] });
   }
   var lastDraw = 0;
-  var lastZ = -1;
   var camB = 0;
-  function drawCar(force) {
-    if (!map || !me.has || !map.getSource("car")) return;
-    const z = map.getZoom(), d = carData(vis.lng, vis.lat, vis.hdg, carScale(z));
-    map.getSource("car").setData(d.car);
-    map.getSource("car-shadow").setData(d.shadow);
-    map.getSource("car-halo").setData(d.halo);
-    lastZ = z;
+  var lastCarMode = null;
+  var lastPt = [0, 0];
+  function drawMe(force) {
+    if (!map || !me.has || !map.getSource("me")) return;
+    const cm = carMode();
+    if (cm !== lastCarMode) {
+      lastCarMode = cm;
+      setVisibleMe(cm);
+      if (!cm) {
+        for (const k of ["car", "car-shadow", "car-halo"]) map.getSource(k) && map.getSource(k).setData(EMPTY);
+      }
+    }
+    if (cm) {
+      const d = carData(vis.lng, vis.lat, vis.hdg, carScale(map.getZoom()));
+      map.getSource("car").setData(d.car);
+      map.getSource("car-shadow").setData(d.shadow);
+      map.getSource("car-halo").setData(d.halo);
+    } else if (force || Math.abs(vis.lng - lastPt[0]) + Math.abs(vis.lat - lastPt[1]) > 1e-9) {
+      map.getSource("me").setData({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [vis.lng, vis.lat] } });
+      lastPt = [vis.lng, vis.lat];
+    }
+  }
+  function predicted(now) {
+    if (!navActive || me.speed < 1.2 || !lastFixWall) return [me.lng, me.lat];
+    const dt = Math.min(1.6, (now - lastFixWall) / 1e3), v = me.speed * dt, r = me.hdg * Math.PI / 180;
+    return [me.lng + Math.sin(r) * v / (111320 * Math.cos(me.lat * Math.PI / 180)), me.lat + Math.cos(r) * v / 111320];
   }
   function loop(t) {
     requestAnimationFrame(loop);
     if (!map || !me.has) return;
     const dt = Math.min(0.1, (t - (loop.t || t)) / 1e3);
     loop.t = t;
-    const k = 1 - Math.exp(-dt * 7), kh = 1 - Math.exp(-dt * 9);
-    vis.lng += (me.lng - vis.lng) * k;
-    vis.lat += (me.lat - vis.lat) * k;
+    const k = 1 - Math.exp(-dt * 8), kh = 1 - Math.exp(-dt * 9);
+    const tg = predicted(Date.now());
+    vis.lng += (tg[0] - vis.lng) * k;
+    vis.lat += (tg[1] - vis.lat) * k;
     vis.hdg = normDeg(vis.hdg + angDiff(me.hdg, vis.hdg) * kh);
-    if (t - lastDraw < 33) return;
+    if (t - lastDraw < 28) return;
     lastDraw = t;
-    drawCar();
+    drawMe();
+    deadReckon();
     if (follow) {
       const useHeading = navActive || !northOnly && ST.headingUp && me.speed > 0.8;
-      if (useHeading) camB = normDeg(camB + angDiff(vis.hdg, camB) * 0.18);
+      if (useHeading) camB = normDeg(camB + angDiff(vis.hdg, camB) * 0.16);
       else camB = map.getBearing();
       map.jumpTo({ center: [vis.lng, vis.lat], bearing: useHeading ? camB : map.getBearing(), padding: { top: navActive ? Math.round(innerHeight * 0.38) : 0, bottom: 0, left: 0, right: 0 } });
     }
@@ -763,6 +915,20 @@
   function setFollow(v) {
     follow = v;
     N.bLocate.classList.toggle("on", v);
+  }
+  function deadReckon() {
+    if (!navActive || simOn || !route || lastAlong == null) return;
+    const gap = (Date.now() - lastFixWall) / 1e3;
+    if (gap < 4 || gap > 90 || me.speed < 1.5) return;
+    if (deadReckon.t && Date.now() - deadReckon.t < 500) return;
+    deadReckon.t = Date.now();
+    lastAlong = Math.min(route.total, lastAlong + me.speed * 0.5);
+    const p = pointAt(route, lastAlong), q = pointAt(route, lastAlong + 8);
+    me.lng = p[0];
+    me.lat = p[1];
+    me.hdg = bearing(p, q);
+    setStatus("\u0625\u0634\u0627\u0631\u0629 GPS \u0645\u0641\u0642\u0648\u062F\u0629 \u2014 \u0645\u0648\u0642\u0639 \u062A\u0642\u062F\u064A\u0631\u064A");
+    navTick(true);
   }
   function startGPS() {
     if (!("geolocation" in navigator)) {
@@ -776,9 +942,12 @@
       },
       (err) => {
         if (err.code === 1) {
-          toast("\u062A\u0645 \u0631\u0641\u0636 \u0625\u0630\u0646 \u0627\u0644\u0645\u0648\u0642\u0639 \u2014 \u0641\u0639\u0651\u0644\u0647 \u0645\u0646 \u0625\u0639\u062F\u0627\u062F\u0627\u062A \u0627\u0644\u0645\u062A\u0635\u0641\u062D \u062B\u0645 \u0623\u0639\u062F \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629", 5e3);
+          toast("\u062A\u0645 \u0631\u0641\u0636 \u0625\u0630\u0646 \u0627\u0644\u0645\u0648\u0642\u0639 \u2014 \u0641\u0639\u0651\u0644\u0647 \u0645\u0646 \u0625\u0639\u062F\u0627\u062F\u0627\u062A \u0627\u0644\u0645\u062A\u0635\u0641\u062D \u062B\u0645 \u0627\u0636\u063A\u0637 \u0632\u0631 \u0645\u0648\u0642\u0639\u064A", 5500);
           setStatus("\u0625\u0630\u0646 \u0627\u0644\u0645\u0648\u0642\u0639 \u0645\u0631\u0641\u0648\u0636");
-          navigator.geolocation.clearWatch(watchId);
+          try {
+            navigator.geolocation.clearWatch(watchId);
+          } catch (e) {
+          }
           watchId = null;
         } else if (err.code === 2) setStatus("\u062A\u0639\u0630\u0651\u0631 \u062A\u062D\u062F\u064A\u062F \u0627\u0644\u0645\u0648\u0642\u0639 \u062D\u0627\u0644\u064A\u0627\u064B");
         else setStatus("\u0625\u0634\u0627\u0631\u0629 GPS \u0636\u0639\u064A\u0641\u0629\u2026");
@@ -794,8 +963,10 @@
     if (f.heading != null && !isNaN(f.heading) && (f.speed == null || f.speed > 1)) hdg = f.heading;
     else if (prev && moved > 4 && (f.acc == null || f.acc < 80)) hdg = bearing(prev, cur);
     const spd = f.speed != null && !isNaN(f.speed) ? f.speed : prev ? moved / dts : 0;
+    lastFixWall = Date.now();
     if (me.has && moved < 1.2 && spd < 0.6 && !f.force) {
       me.acc = f.acc;
+      me.speed = 0;
       if (compassHeading != null) me.hdg = compassHeading;
       return;
     }
@@ -814,7 +985,7 @@
       camB = me.hdg;
       map.jumpTo({ center: cur, zoom: Math.max(map.getZoom(), 16.3), pitch: 60 });
       setFollow(true);
-      drawCar(true);
+      drawMe(true);
     }
     try {
       localStorage.setItem("mp_last", JSON.stringify({ lng: me.lng, lat: me.lat }));
@@ -857,28 +1028,38 @@
     const c = map.getCenter();
     return [c.lng, c.lat];
   })();
+  var sCache = /* @__PURE__ */ new Map();
+  var sAbort = null;
   var lastNom = 0;
-  async function nominatim(q) {
-    const wait = lastNom + 1100 - Date.now();
+  var rowOf = (title, sub, lng, lat, ico) => ({ title: String(title || "\u0645\u0643\u0627\u0646").trim(), sub: sub || "", lng: +lng, lat: +lat, ico: ico || "i-pin" });
+  async function photon(q, signal) {
+    const o = origin();
+    const j = await getJSON(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=7&lat=${o[1].toFixed(3)}&lon=${o[0].toFixed(3)}&location_bias_scale=0.5`, 4500, signal);
+    return (j.features || []).map((f) => {
+      const p = f.properties || {}, c = f.geometry.coordinates;
+      const t = p.name || [p.street, p.housenumber].filter(Boolean).join(" ");
+      return rowOf(t, [p.street && p.name ? p.street : "", p.district, p.city, p.state, p.country].filter(Boolean).join("\u060C "), c[0], c[1]);
+    }).filter((r) => r.title && isFinite(r.lng));
+  }
+  async function nominatim(q, signal) {
+    const wait = lastNom + 1e3 - Date.now();
     if (wait > 0) await sleep(wait);
     lastNom = Date.now();
     const o = origin();
-    let url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&accept-language=ar,en&q=${encodeURIComponent(q)}&viewbox=${o[0] - 0.6},${o[1] + 0.6},${o[0] + 0.6},${o[1] - 0.6}`;
-    const r = await timeoutFetch(url, { headers: { Accept: "application/json" } }, 12e3);
-    if (!r.ok) throw new Error("nominatim");
-    return r.json();
+    const j = await getJSON(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&accept-language=ar,en&q=${encodeURIComponent(q)}&viewbox=${o[0] - 0.6},${o[1] + 0.6},${o[0] + 0.6},${o[1] - 0.6}`, 9e3, signal);
+    return j.map((r) => {
+      const p = String(r.display_name || "").split(",");
+      return rowOf(r.name || p[0], p.slice(1, 4).join("\u060C").trim(), r.lon, r.lat);
+    });
   }
-  function showSugg(items, emptyMsg) {
+  function showSugg(items, emptyMsg, loading) {
     const ul = N.sugg;
     ul.replaceChildren();
-    if (!items.length) {
-      ul.append(h("li", { class: "none" }, emptyMsg || "\u0644\u0627 \u0646\u062A\u0627\u0626\u062C"));
-    }
-    for (const it of items) {
-      ul.append(h("li", { tabindex: "0", role: "option", on: { click: () => choose(it), keydown: (e) => {
-        if (e.key === "Enter") choose(it);
-      } } }, svg(it.ico || "i-pin"), h("div", {}, h("b", {}, it.title), h("small", {}, it.sub || ""))));
-    }
+    if (!items.length) ul.append(h("li", { class: "none" }, emptyMsg || "\u0644\u0627 \u0646\u062A\u0627\u0626\u062C"));
+    for (const it of items) ul.append(h("li", { tabindex: "0", role: "option", on: { click: () => choose(it), keydown: (e) => {
+      if (e.key === "Enter") choose(it);
+    } } }, svg(it.ico || "i-pin"), h("div", {}, h("b", {}, it.title), h("small", {}, it.sub || ""))));
+    if (loading && items.length) ul.append(h("li", { class: "none" }, "\u062C\u0627\u0631\u064D \u0627\u0644\u0628\u062D\u062B\u2026"));
     ul.classList.remove("hide");
   }
   function choose(it) {
@@ -887,11 +1068,12 @@
     N.qclear.classList.remove("hide");
     N.q.blur();
     rememberSearch(it);
-    setDestination({ lng: it.lng, lat: it.lat, name: it.title, sub: it.sub });
+    clearPOI();
+    showPlace({ lng: it.lng, lat: it.lat, name: it.title, sub: it.sub }, true);
   }
   function rememberSearch(it) {
-    ST.recent = [{ title: it.title, sub: it.sub || "", lng: it.lng, lat: it.lat }, ...ST.recent.filter((r) => r.title !== it.title)].slice(0, 6);
-    save("mp_settings_v1", ST);
+    ST.recent = [{ title: it.title, sub: it.sub || "", lng: it.lng, lat: it.lat }, ...ST.recent.filter((r) => r.title !== it.title)].slice(0, 8);
+    save("mp_settings_v2", ST);
   }
   async function doSearch() {
     const v = N.q.value.trim();
@@ -900,27 +1082,41 @@
       N.sugg.classList.add("hide");
       return;
     }
-    showSugg([{ title: "\u062C\u0627\u0631\u064D \u0627\u0644\u0628\u062D\u062B\u2026", sub: "", lng: 0, lat: 0, ico: "i-search" }].map((x) => ({ ...x })));
-    N.sugg.firstChild.onclick = null;
+    if (sAbort) sAbort.abort();
+    sAbort = new AbortController();
+    const sig = sAbort.signal;
+    const local = ST.recent.filter((r) => r.title.includes(v)).slice(0, 3).map((r) => ({ ...r, ico: "i-note" }));
+    if (sCache.has(v)) {
+      showSugg([...local, ...sCache.get(v)]);
+      return;
+    }
+    showSugg(local, "", true);
+    if (!local.length) showSugg([], "\u062C\u0627\u0631\u064D \u0627\u0644\u0628\u062D\u062B\u2026");
     try {
-      const res = await nominatim(v);
-      if (N.q.value.trim() !== v) return;
-      showSugg(res.map((r) => {
-        const parts = String(r.display_name || "").split(",");
-        return { title: (r.name || parts[0] || "").trim() || "\u0645\u0643\u0627\u0646", sub: parts.slice(1, 4).join("\u060C").trim(), lng: +r.lon, lat: +r.lat, ico: "i-pin" };
-      }).filter((x) => isFinite(x.lng) && isFinite(x.lat)), "\u0644\u0627 \u062A\u0648\u062C\u062F \u0646\u062A\u0627\u0626\u062C \u0644\u0647\u0630\u0627 \u0627\u0644\u0628\u062D\u062B");
+      let res = [];
+      try {
+        res = await photon(v, sig);
+      } catch (e) {
+        if (sig.aborted) return;
+      }
+      if (!res.length && !sig.aborted) res = await nominatim(v, sig);
+      if (sig.aborted) return;
+      sCache.set(v, res);
+      if (sCache.size > 60) sCache.delete(sCache.keys().next().value);
+      showSugg([...local, ...res.filter((r) => !local.some((l) => l.title === r.title))], "\u0644\u0627 \u062A\u0648\u062C\u062F \u0646\u062A\u0627\u0626\u062C \u0644\u0647\u0630\u0627 \u0627\u0644\u0628\u062D\u062B");
     } catch (e) {
-      showSugg([], "\u062A\u0639\u0630\u0651\u0631 \u0627\u0644\u0628\u062D\u062B \u2014 \u062A\u062D\u0642\u0642 \u0645\u0646 \u0627\u0644\u0627\u062A\u0635\u0627\u0644");
+      if (!sig.aborted) showSugg(local, "\u062A\u0639\u0630\u0651\u0631 \u0627\u0644\u0628\u062D\u062B \u2014 \u062A\u062D\u0642\u0642 \u0645\u0646 \u0627\u0644\u0627\u062A\u0635\u0627\u0644");
     }
   }
   function showRecent() {
-    const r = ST.recent;
-    if (!r.length) {
+    if (!ST.recent.length) {
       toast("\u0644\u0627 \u062A\u0648\u062C\u062F \u0639\u0645\u0644\u064A\u0627\u062A \u0628\u062D\u062B \u0633\u0627\u0628\u0642\u0629");
       return;
     }
-    showSugg(r.map((x) => ({ ...x, ico: "i-note" })));
+    showSugg(ST.recent.map((x) => ({ ...x, ico: "i-note" })));
   }
+  var TYPE_AR = { restaurant: "\u0645\u0637\u0639\u0645", cafe: "\u0645\u0642\u0647\u0649", fast_food: "\u0648\u062C\u0628\u0627\u062A \u0633\u0631\u064A\u0639\u0629", fuel: "\u0645\u062D\u0637\u0629 \u0648\u0642\u0648\u062F", place_of_worship: "\u062F\u0627\u0631 \u0639\u0628\u0627\u062F\u0629", mosque: "\u0645\u0633\u062C\u062F", hospital: "\u0645\u0633\u062A\u0634\u0641\u0649", clinic: "\u0639\u064A\u0627\u062F\u0629", pharmacy: "\u0635\u064A\u062F\u0644\u064A\u0629", school: "\u0645\u062F\u0631\u0633\u0629", university: "\u062C\u0627\u0645\u0639\u0629", bank: "\u0628\u0646\u0643", atm: "\u0635\u0631\u0627\u0641 \u0622\u0644\u064A", supermarket: "\u0633\u0648\u0628\u0631\u0645\u0627\u0631\u0643\u062A", convenience: "\u0628\u0642\u0627\u0644\u0629", bakery: "\u0645\u062E\u0628\u0632", park: "\u062D\u062F\u064A\u0642\u0629", hotel: "\u0641\u0646\u062F\u0642", parking: "\u0645\u0648\u0642\u0641 \u0633\u064A\u0627\u0631\u0627\u062A", police: "\u0634\u0631\u0637\u0629", post_office: "\u0628\u0631\u064A\u062F", library: "\u0645\u0643\u062A\u0628\u0629", cinema: "\u0633\u064A\u0646\u0645\u0627", stadium: "\u0645\u0644\u0639\u0628", bus_station: "\u0645\u062D\u0637\u0629 \u062D\u0627\u0641\u0644\u0627\u062A", museum: "\u0645\u062A\u062D\u0641", shop: "\u0645\u062A\u062C\u0631", mall: "\u0645\u0631\u0643\u0632 \u062A\u0633\u0648\u0642" };
+  var kmFrom = (p) => me.has ? fmtDist(hav([me.lng, me.lat], [p.lng, p.lat])) : null;
   function setMarker() {
     if (destMarker) {
       destMarker.remove();
@@ -930,35 +1126,185 @@
     const el = h("div", { class: "pin dest" }, h("div", { class: "head" }), h("div", { class: "glyph" }, svg("i-flag")), h("div", { class: "foot" }), h("div", { class: "lbl" }, dest.name || "\u0627\u0644\u0648\u062C\u0647\u0629"));
     destMarker = new maplibregl.Marker({ element: h("div", { class: "mk" }, el), anchor: "bottom" }).setLngLat([dest.lng, dest.lat]).addTo(map);
   }
-  async function setDestination(d, keepPOI) {
-    dest = d;
-    setMarker();
-    if (!keepPOI) {
-      clearPOI(true);
+  var shareURL = (p) => {
+    const u = new URL(location.href.split("#")[0].split("?")[0]);
+    u.searchParams.set("ll", p.lat.toFixed(5) + "," + p.lng.toFixed(5));
+    if (p.name) u.searchParams.set("n", p.name);
+    return u.toString();
+  };
+  async function sharePlace(p) {
+    const data = { title: p.name || "\u0645\u0648\u0642\u0639", text: (p.name || "\u0645\u0648\u0642\u0639") + " \u2014 \u0639\u0628\u0631 \u062A\u0637\u0628\u064A\u0642 \u0645\u0633\u0627\u0631\u064A", url: shareURL(p) };
+    if (navigator.share) {
+      try {
+        await navigator.share(data);
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+      }
     }
-    await computeRoute(false);
+    try {
+      await navigator.clipboard.writeText(data.url);
+      toast("\u062A\u0645 \u0646\u0633\u062E \u0631\u0627\u0628\u0637 \u0627\u0644\u0645\u0648\u0642\u0639");
+    } catch (e) {
+      toast(data.url, 6e3);
+    }
   }
-  async function computeRoute(silent) {
+  function showPlace(p, fly) {
+    stopNavIfIdle();
+    route = null;
+    routes = {};
+    pushRoute();
+    dest = p;
+    setMarker();
+    if (fly) {
+      setFollow(false);
+      map.flyTo({ center: [p.lng, p.lat], zoom: Math.max(map.getZoom(), 16), pitch: 60, duration: 900, padding: { top: 0, bottom: Math.round(innerHeight * 0.3), left: 0, right: 0 } });
+    }
+    renderPlace();
+  }
+  function renderPlace() {
+    const p = dest;
+    if (!p) return;
+    const d = kmFrom(p);
+    showSheet(h(
+      "div",
+      {},
+      h("div", { class: "sh-h" }, svg("i-pin"), h("h3", {}, p.name || "\u0645\u0648\u0642\u0639 \u0645\u062D\u062F\u062F"), h("button", { class: "plain", "aria-label": "\u0625\u063A\u0644\u0627\u0642", on: { click: clearAll } }, svg("i-close"))),
+      p.sub ? h("p", { class: "note" }, p.sub) : null,
+      h("div", { class: "chipsrow" }, p.type ? h("span", { class: "tag" }, p.type) : null, d ? h("span", { class: "tag" }, "\u064A\u0628\u0639\u062F \u0639\u0646\u0643 \u2248 " + d) : null, h("span", { class: "tag mono" }, p.lat.toFixed(5) + " , " + p.lng.toFixed(5))),
+      h(
+        "div",
+        { class: "btns" },
+        h("button", { class: "primary", on: { click: () => chooseMode() } }, svg("i-route"), "\u0628\u062F\u0621"),
+        h("button", { class: "ghost", on: { click: () => sharePlace(p) } }, svg("i-share"), "\u0645\u0634\u0627\u0631\u0643\u0629"),
+        h("button", { class: "ghost", on: { click: async () => {
+          try {
+            await navigator.clipboard.writeText(p.lat.toFixed(6) + "," + p.lng.toFixed(6));
+            toast("\u062A\u0645 \u0646\u0633\u062E \u0627\u0644\u0625\u062D\u062F\u0627\u062B\u064A\u0627\u062A");
+          } catch (e) {
+            toast(p.lat.toFixed(6) + "," + p.lng.toFixed(6), 5e3);
+          }
+        } } }, svg("i-copy"), "\u0646\u0633\u062E")
+      )
+    ));
+  }
+  async function mapClick(e) {
+    if (navActive) return;
+    const ll = e.lngLat;
+    let name = null, type = null;
+    try {
+      const fs = map.queryRenderedFeatures(e.point).filter((f2) => f2.properties && !OWN.has(f2.layer.id) && (f2.properties["name:ar"] || f2.properties.name));
+      const f = fs.find((f2) => f2.sourceLayer === "poi") || fs.find((f2) => f2.sourceLayer !== "transportation_name" && f2.sourceLayer !== "waterway") || fs[0];
+      if (f) {
+        name = f.properties["name:ar"] || f.properties.name;
+        const c = f.properties.subclass || f.properties.class;
+        type = TYPE_AR[c] || null;
+      }
+    } catch (_) {
+    }
+    const p = { lng: ll.lng, lat: ll.lat, name: name || "\u0645\u0648\u0642\u0639 \u0645\u062D\u062F\u062F \u0639\u0644\u0649 \u0627\u0644\u062E\u0631\u064A\u0637\u0629", type };
+    clearPOI();
+    showPlace(p, false);
+    try {
+      const j = await getJSON(`https://photon.komoot.io/reverse?lon=${ll.lng.toFixed(6)}&lat=${ll.lat.toFixed(6)}`, 5e3);
+      const pr = j.features && j.features[0] && j.features[0].properties || {};
+      if (dest !== p) return;
+      if (!name && (pr.name || pr.street)) p.name = pr.name || [pr.street, pr.housenumber].filter(Boolean).join(" ");
+      p.sub = [pr.street && pr.name ? pr.street : "", pr.district, pr.city, pr.state, pr.country].filter(Boolean).join("\u060C ");
+      if (!p.type && pr.osm_value && TYPE_AR[pr.osm_value]) p.type = TYPE_AR[pr.osm_value];
+      setMarker();
+      renderPlace();
+    } catch (err) {
+    }
+  }
+  async function osrm(net, a, b) {
+    const q = `${a[0].toFixed(6)},${a[1].toFixed(6)};${b[0].toFixed(6)},${b[1].toFixed(6)}?overview=full&geometries=geojson&steps=true`;
+    try {
+      const j = await getJSON(NETS[net] + q, 12e3);
+      if (j.code === "Ok") return j;
+    } catch (e) {
+    }
+    if (net === "car") {
+      const j = await getJSON(OSRM_FALLBACK + q, 12e3);
+      if (j.code === "Ok") return j;
+    }
+    throw new Error("route");
+  }
+  function buildRoute(j, m) {
+    const r = parseOSRM(j);
+    if (m === "car" || m === "moto") {
+      const tr = estimate(r, m);
+      r.traffic = tr;
+      r.freeDur = r.dur;
+      r.dur = tr.dur;
+    } else r.traffic = null;
+    return r;
+  }
+  async function chooseMode() {
     if (!dest) return;
     const a = origin();
-    if (!silent) showSheet(sheetLoading("\u062C\u0627\u0631\u064D \u062D\u0633\u0627\u0628 \u0627\u0644\u0645\u0633\u0627\u0631\u2026"));
-    try {
-      const url = `https://router.project-osrm.org/route/v1/driving/${a[0].toFixed(6)},${a[1].toFixed(6)};${dest.lng.toFixed(6)},${dest.lat.toFixed(6)}?overview=full&geometries=geojson&steps=true&alternatives=false`;
-      const r = await timeoutFetch(url, {}, 15e3);
-      const j = await r.json();
-      if (j.code !== "Ok") throw new Error(j.code || "route");
-      route = parseOSRM(j);
-      nav.setRoute(route);
-      pushRoute();
-      if (!silent) {
-        fitRoute();
-        showRouteSheet();
+    if (!me.has) toast("\u0645\u0648\u0642\u0639\u0643 \u063A\u064A\u0631 \u0645\u062D\u062F\u062F \u2014 \u0633\u064A\u064F\u062D\u0633\u0628 \u0627\u0644\u0645\u0633\u0627\u0631 \u0645\u0646 \u0645\u0631\u0643\u0632 \u0627\u0644\u062E\u0631\u064A\u0637\u0629", 3800);
+    const cards = {};
+    const grid = h("div", { class: "modes" });
+    for (const m of Object.keys(MODES)) {
+      const t = h("small", {}, "\u2026"), d = h("small", { class: "dim" }, "");
+      const b = h("button", { class: "mode", disabled: "", on: { click: () => applyMode(m) } }, svg(MODES[m].ico), h("b", {}, MODES[m].label), t, d);
+      cards[m] = { b, t, d };
+      grid.append(b);
+    }
+    showSheet(h(
+      "div",
+      {},
+      h("div", { class: "sh-h" }, svg("i-route"), h("h3", {}, "\u0627\u062E\u062A\u0631 \u0648\u0633\u064A\u0644\u0629 \u0627\u0644\u062A\u0646\u0642\u0644"), h("button", { class: "plain", "aria-label": "\u0631\u062C\u0648\u0639", on: { click: () => renderPlace() } }, svg("i-close"))),
+      h("p", { class: "note" }, "\u0625\u0644\u0649: " + (dest.name || "\u0627\u0644\u0648\u062C\u0647\u0629")),
+      grid
+    ));
+    routes = {};
+    const nets = {};
+    const get = (n) => nets[n] || (nets[n] = osrm(n, a, [dest.lng, dest.lat]));
+    let best = null, bestT = 1e12;
+    const done = [];
+    await Promise.all(Object.keys(MODES).map(async (m) => {
+      try {
+        const j = await get(MODES[m].net);
+        const r = buildRoute(j, m);
+        routes[m] = r;
+        const c = cards[m];
+        c.b.removeAttribute("disabled");
+        c.t.textContent = fmtTime(r.dur);
+        c.d.textContent = fmtDist(r.dist);
+        if (r.dur < bestT) {
+          bestT = r.dur;
+          best = m;
+        }
+        done.push(m);
+      } catch (e) {
+        cards[m].t.textContent = "\u063A\u064A\u0631 \u0645\u062A\u0627\u062D";
+        cards[m].b.classList.add("off");
       }
+    }));
+    if (best && cards[best]) cards[best].b.classList.add("fast");
+    if (!done.length) showSheet(h("div", {}, h("div", { class: "sh-h" }, svg("i-route"), h("h3", {}, dest.name || "\u0627\u0644\u0648\u062C\u0647\u0629")), h("p", { class: "err" }, "\u062A\u0639\u0630\u0651\u0631 \u062D\u0633\u0627\u0628 \u0627\u0644\u0645\u0633\u0627\u0631. \u062A\u062D\u0642\u0642 \u0645\u0646 \u0627\u0644\u0627\u062A\u0635\u0627\u0644 \u0623\u0648 \u062C\u0631\u0651\u0628 \u0648\u062C\u0647\u0629 \u0623\u062E\u0631\u0649."), h("div", { class: "btns" }, h("button", { class: "ghost", on: { click: renderPlace } }, "\u0631\u062C\u0648\u0639"), h("button", { class: "primary", on: { click: chooseMode } }, "\u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629"))));
+  }
+  function applyMode(m) {
+    const r = routes[m];
+    if (!r) return;
+    mode = m;
+    route = r;
+    nav.setRoute(r);
+    pushRoute();
+    fitRoute();
+    showRouteSheet();
+  }
+  async function recompute() {
+    try {
+      const j = await osrm(MODES[mode].net, origin(), [dest.lng, dest.lat]);
+      const r = buildRoute(j, mode);
+      route = r;
+      nav.setRoute(r);
+      pushRoute();
       return true;
     } catch (e) {
-      route = null;
-      pushRoute();
-      if (!silent) showSheet(h("div", {}, h("div", { class: "sh-h" }, svg("i-route"), h("h3", {}, dest.name || "\u0627\u0644\u0648\u062C\u0647\u0629")), h("p", { class: "err" }, "\u062A\u0639\u0630\u0651\u0631 \u062D\u0633\u0627\u0628 \u0627\u0644\u0645\u0633\u0627\u0631. \u062A\u062D\u0642\u0642 \u0645\u0646 \u0627\u0644\u0627\u062A\u0635\u0627\u0644 \u0623\u0648 \u062C\u0631\u0651\u0628 \u0648\u062C\u0647\u0629 \u0623\u062E\u0631\u0649."), h("div", { class: "btns" }, h("button", { class: "ghost", on: { click: clearAll } }, "\u0625\u063A\u0644\u0627\u0642"), h("button", { class: "primary", on: { click: () => computeRoute(false) } }, "\u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629"))));
       return false;
     }
   }
@@ -968,15 +1314,19 @@
     const b = new maplibregl.LngLatBounds();
     for (const c of route.coords) b.extend(c);
     if (me.has) b.extend([me.lng, me.lat]);
-    map.fitBounds(b, { padding: { top: 150, bottom: Math.round(innerHeight * 0.42), left: 50, right: 50 }, pitch: 45, bearing: 0, duration: 900, maxZoom: 17 });
+    map.fitBounds(b, { padding: { top: 150, bottom: Math.round(innerHeight * 0.45), left: 50, right: 50 }, pitch: 50, bearing: 0, duration: 900, maxZoom: 17 });
+  }
+  function stopNavIfIdle() {
+    if (navActive) stopNav(true);
   }
   function clearAll() {
     stopNav(true);
     dest = null;
     route = null;
+    routes = {};
     setMarker();
     pushRoute();
-    clearPOI(true);
+    clearPOI();
     hideSheet();
     N.q.value = "";
     N.qclear.classList.add("hide");
@@ -991,27 +1341,24 @@
     N.sheet.classList.add("hide");
     document.body.classList.remove("sheetOpen");
   }
-  var sheetLoading = (t) => h("div", { class: "sh-h" }, svg("i-route"), h("h3", {}, t));
-  function statBox(v, l, c) {
-    return h("div", { class: "stat " + (c || "") }, h("b", {}, v), h("small", {}, l));
-  }
+  var statBox = (v, l, c) => h("div", { class: "stat " + (c || "") }, h("b", {}, v), h("small", {}, l));
   function showRouteSheet() {
     if (!route || !dest) return;
+    const tr = route.traffic;
     const steps = h("ul", { class: "steps-l hide" }, route.steps.filter((s) => s.type !== "depart").map((s) => h("li", {}, svg(icoOf(s.type, s.modifier)), h("span", {}, actionText(s)), h("small", {}, s.type === "arrive" ? "" : fmtDist(s.dist)))));
-    const body2 = h(
+    const M = MODES[mode];
+    showSheet(h(
       "div",
       {},
-      h("div", { class: "sh-h" }, svg("i-pin"), h("h3", {}, dest.name || "\u0627\u0644\u0648\u062C\u0647\u0629"), h("button", { class: "plain", "aria-label": "\u0625\u063A\u0644\u0627\u0642", on: { click: clearAll } }, svg("i-close"))),
-      dest.sub ? h("p", { class: "note" }, dest.sub) : null,
-      h("div", { class: "stats" }, statBox(fmtDist(route.dist), "\u0627\u0644\u0645\u0633\u0627\u0641\u0629", "acc"), statBox(fmtTime(route.dur), "\u0627\u0644\u0648\u0642\u062A \u0627\u0644\u0645\u062A\u0648\u0642\u0639"), statBox(clock(route.dur), "\u0627\u0644\u0648\u0635\u0648\u0644")),
+      h("div", { class: "sh-h" }, svg(M.ico), h("h3", {}, dest.name || "\u0627\u0644\u0648\u062C\u0647\u0629"), h("button", { class: "plain", "aria-label": "\u0625\u063A\u0644\u0627\u0642", on: { click: clearAll } }, svg("i-close"))),
+      h("div", { class: "stats" }, statBox(fmtTime(route.dur), "\u0627\u0644\u0648\u0642\u062A \u0627\u0644\u0645\u062A\u0648\u0642\u0639", "acc"), statBox(fmtDist(route.dist), "\u0627\u0644\u0645\u0633\u0627\u0641\u0629"), statBox(clock(route.dur), "\u0627\u0644\u0648\u0635\u0648\u0644")),
+      tr ? h("div", { class: "traffic" }, h("div", { class: "tl" }, h("b", {}, "\u0627\u0644\u0627\u0632\u062F\u062D\u0627\u0645: " + tr.label), h("small", {}, tr.delay >= 60 ? `\u062A\u0623\u062E\u064A\u0631 \u0645\u062A\u0648\u0642\u0639 \u2248 ${fmtTime(tr.delay)}` : "\u0628\u062F\u0648\u0646 \u062A\u0623\u062E\u064A\u0631 \u064A\u064F\u0630\u0643\u0631")), h("div", { class: "bar" }), h("div", { class: "bl" }, h("span", {}, "\u0633\u0644\u0633"), h("span", {}, "\u0645\u062A\u0648\u0633\u0637"), h("span", {}, "\u0645\u0632\u062F\u062D\u0645")), h("p", { class: "note" }, "\u062A\u0642\u062F\u064A\u0631 \u062D\u0633\u0628 \u0627\u0644\u0648\u0642\u062A \u0648\u0646\u0648\u0639 \u0627\u0644\u0637\u0631\u064A\u0642 \u0648\u0644\u064A\u0633 \u0628\u064A\u0627\u0646\u0627\u062A \u0645\u0628\u0627\u0634\u0631\u0629.")) : null,
       h("div", { class: "btns" }, h("button", { class: "primary", on: { click: () => startNav(false) } }, svg("i-car"), "\u0627\u0628\u062F\u0623 \u0627\u0644\u062A\u0648\u062C\u064A\u0647"), h("button", { class: "ghost", on: { click: () => startNav(true) } }, svg("i-route"), "\u0645\u062D\u0627\u0643\u0627\u0629")),
-      h("div", { class: "btns" }, h("button", { class: "ghost", on: { click: () => steps.classList.toggle("hide") } }, svg("i-doc"), "\u062E\u0637\u0648\u0627\u062A \u0627\u0644\u0637\u0631\u064A\u0642"), poiState ? h("button", { class: "ghost", on: { click: () => renderPOIList() } }, svg("i-pin"), "\u0627\u0644\u0642\u0627\u0626\u0645\u0629") : null),
+      h("div", { class: "btns" }, h("button", { class: "ghost", on: { click: () => chooseMode() } }, svg("i-refresh"), "\u062A\u063A\u064A\u064A\u0631 \u0627\u0644\u0648\u0633\u064A\u0644\u0629"), h("button", { class: "ghost", on: { click: () => steps.classList.toggle("hide") } }, svg("i-doc"), "\u062E\u0637\u0648\u0627\u062A \u0627\u0644\u0637\u0631\u064A\u0642")),
       steps
-    );
-    showSheet(body2);
+    ));
   }
   function speak(t) {
-    N.hudText && (N.hudText.title = t);
     if (!ST.voice || !("speechSynthesis" in window)) return;
     try {
       speechSynthesis.cancel();
@@ -1036,9 +1383,7 @@
   }
   async function lockScreen() {
     try {
-      if ("wakeLock" in navigator) {
-        wakeLock = await navigator.wakeLock.request("screen");
-      }
+      if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen");
     } catch (e) {
     }
   }
@@ -1046,6 +1391,7 @@
     if (!route) return;
     unlockSpeech();
     enableCompass();
+    warned.clear();
     if (sim) {
       stopSim();
       me.has = true;
@@ -1064,8 +1410,8 @@
       startGPS();
       return;
     } else if (hav([me.lng, me.lat], route.coords[0]) > 80) {
-      computeRoute(true).then(() => {
-        if (route) startNav(false);
+      recompute().then((ok) => {
+        if (ok) startNav(false);
       });
       return;
     }
@@ -1074,18 +1420,17 @@
     document.body.classList.add("navmode");
     N.hud.classList.remove("hide");
     hideSheet();
-    N.hudVol.firstChild && 0;
     setVolIcon();
     setFollow(true);
     lockScreen();
-    map.easeTo({ center: [vis.lng, vis.lat], zoom: 17.6, pitch: 65, bearing: vis.hdg, duration: 900 });
+    lastAlong = 0;
+    const walk = mode === "foot" || mode === "bike";
+    map.easeTo({ center: [vis.lng, vis.lat], zoom: walk ? 18.2 : 17.6, pitch: 65, bearing: vis.hdg, duration: 900 });
     if (sim) startSim();
     else navTick();
   }
   function stopNav(silent) {
-    if (!navActive && !simOn) {
-      return;
-    }
+    if (!navActive && !simOn) return;
     navActive = false;
     nav.stop();
     stopSim();
@@ -1100,25 +1445,26 @@
     } catch (e) {
     }
     wakeLock = null;
+    drawMe(true);
     map.easeTo({ pitch: 55, duration: 600 });
     if (!silent && route) showRouteSheet();
   }
-  function navTick() {
+  function navTick(dr) {
     const st = nav.update([me.lng, me.lat], me.speed);
     if (!st) return;
+    if (!dr) lastAlong = st.along;
     N.hudDist.textContent = st.next.type === "arrive" && st.dNext < 30 ? "\u0627\u0644\u0648\u0635\u0648\u0644" : fmtDist(st.dNext);
     N.hudText.textContent = st.text;
     N.hudIco.firstChild.setAttribute("href", "#" + st.ico);
     N.hudSpeed.textContent = Math.round(me.speed * 3.6) + " \u0643\u0645/\u0633";
     N.hudRem.textContent = fmtDist(st.rem) + " \xB7 " + fmtTime(st.remTime);
     N.hudEta.textContent = "\u0627\u0644\u0648\u0635\u0648\u0644 " + clock(st.remTime);
+    hazardWatch();
     if (st.offRoute && !simOn && Date.now() - lastReroute > 15e3) {
       lastReroute = Date.now();
       speak("\u062C\u0627\u0631\u064D \u0625\u0639\u0627\u062F\u0629 \u062D\u0633\u0627\u0628 \u0627\u0644\u0645\u0633\u0627\u0631");
-      computeRoute(true).then((ok) => {
-        if (ok) {
-          nav.start(false);
-        }
+      recompute().then((ok) => {
+        if (ok) nav.start(false);
       });
     }
   }
@@ -1145,18 +1491,19 @@
   function startSim() {
     simOn = true;
     let d = 0;
+    const sp = mode === "foot" ? 1.5 : mode === "bike" ? 5 : SIM_SPEED;
     const tick = () => {
       if (!navActive || !route) {
         stopSim();
         return;
       }
-      d += SIM_SPEED * 0.5;
+      d += sp * 0.5;
       if (d >= route.total) {
         stopSim();
         return;
       }
       const p = pointAt(route, d), p2 = pointAt(route, d + 6);
-      handleFix({ lng: p[0], lat: p[1], acc: 5, speed: SIM_SPEED, heading: bearing(p, p2), t: Date.now(), force: true });
+      handleFix({ lng: p[0], lat: p[1], acc: 5, speed: sp, heading: bearing(p, p2), t: Date.now(), force: true });
     };
     tick();
     simTimer = setInterval(tick, 500);
@@ -1166,13 +1513,70 @@
     clearInterval(simTimer);
     simTimer = null;
   }
-  function clearPOI(keepChips) {
+  var HZ = (() => {
+    try {
+      const a = JSON.parse(localStorage.getItem("mp_haz")) || [];
+      return a.filter((x) => Date.now() - x.t < 48 * 36e5);
+    } catch (e) {
+      return [];
+    }
+  })();
+  var saveHZ = () => {
+    try {
+      localStorage.setItem("mp_haz", JSON.stringify(HZ));
+    } catch (e) {
+    }
+  };
+  function drawHazards() {
+    for (const m of hazMarkers) m.remove();
+    hazMarkers = [];
+    for (const z of HZ) {
+      const el = h("div", { class: "hz", title: HAZ[z.type] }, svg("i-warn"));
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        showSheet(h("div", {}, h("div", { class: "sh-h" }, svg("i-warn"), h("h3", {}, HAZ[z.type]), h("button", { class: "plain", on: { click: hideSheet } }, svg("i-close"))), h("p", { class: "note" }, "\u0623\u064F\u0628\u0644\u063A \u0639\u0646\u0647 \u0645\u0646\u0630 " + fmtTime((Date.now() - z.t) / 1e3) + " \xB7 \u0645\u062D\u0641\u0648\u0638 \u0639\u0644\u0649 \u0647\u0630\u0627 \u0627\u0644\u062C\u0647\u0627\u0632"), h("div", { class: "btns" }, h("button", { class: "ghost", on: { click: () => {
+          HZ = HZ.filter((x) => x !== z);
+          saveHZ();
+          drawHazards();
+          hideSheet();
+        } } }, "\u062A\u0645 \u0627\u0644\u0625\u0635\u0644\u0627\u062D / \u0625\u0632\u0627\u0644\u0629"))));
+      });
+      hazMarkers.push(new maplibregl.Marker({ element: h("div", { class: "mk" }, el), anchor: "center" }).setLngLat([z.lng, z.lat]).addTo(map));
+    }
+  }
+  function reportHazard() {
+    const p = origin();
+    showSheet(h(
+      "div",
+      {},
+      h("div", { class: "sh-h" }, svg("i-warn"), h("h3", {}, "\u0627\u0644\u0625\u0628\u0644\u0627\u063A \u0639\u0646 \u062E\u0637\u0631 \u0641\u064A \u0645\u0648\u0642\u0639\u0643"), h("button", { class: "plain", on: { click: hideSheet } }, svg("i-close"))),
+      h("div", { class: "modes" }, Object.keys(HAZ).map((k) => h("button", { class: "mode", on: { click: () => {
+        HZ.push({ id: Date.now(), type: k, lng: p[0], lat: p[1], t: Date.now() });
+        saveHZ();
+        drawHazards();
+        hideSheet();
+        toast("\u062A\u0645 \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u0628\u0644\u0627\u063A: " + HAZ[k]);
+      } } }, svg("i-warn"), h("b", {}, HAZ[k])))),
+      h("p", { class: "note" }, "\u062A\u064F\u062D\u0641\u0638 \u0627\u0644\u0628\u0644\u0627\u063A\u0627\u062A \u0639\u0644\u0649 \u0647\u0630\u0627 \u0627\u0644\u062C\u0647\u0627\u0632 \u0644\u0645\u062F\u0629 48 \u0633\u0627\u0639\u0629 \u0648\u062A\u064F\u0646\u0628\u064E\u0651\u0647 \u0628\u0647\u0627 \u0623\u062B\u0646\u0627\u0621 \u0627\u0644\u0642\u064A\u0627\u062F\u0629. \u0627\u0644\u0645\u0634\u0627\u0631\u0643\u0629 \u0628\u064A\u0646 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645\u064A\u0646 \u062A\u062D\u062A\u0627\u062C \u062E\u0627\u062F\u0645\u0627\u064B (\u0627\u0646\u0638\u0631 README).")
+    ));
+  }
+  function hazardWatch() {
+    for (const z of HZ) {
+      if (warned.has(z.id)) continue;
+      const d = hav([me.lng, me.lat], [z.lng, z.lat]);
+      if (d < 250 && Math.abs(angDiff(bearing([me.lng, me.lat], [z.lng, z.lat]), me.hdg)) < 70) {
+        warned.add(z.id);
+        speak(`\u062A\u0646\u0628\u064A\u0647: ${HAZ[z.type]} \u0623\u0645\u0627\u0645\u0643 \u0628\u0639\u062F ${Math.round(d / 10) * 10} \u0645\u062A\u0631`);
+        toast("\u26A0 " + HAZ[z.type] + " \u0623\u0645\u0627\u0645\u0643", 4e3);
+      }
+    }
+  }
+  function clearPOI() {
     for (const m of poiMarkers) m.remove();
     poiMarkers = [];
     poiState = null;
-    selPOI = null;
     pushPOI();
-    if (!keepChips || true) $$("#chips button").forEach((b) => b.classList.remove("on", "busy"));
+    $$("#chips button").forEach((b) => b.classList.remove("on", "busy"));
   }
   async function showPOI(cat, btn) {
     if (btn.classList.contains("on")) {
@@ -1218,7 +1622,7 @@
   }
   function buildPOIMarkers() {
     const C = CATS[poiState.cat];
-    poiState.list.forEach((p, i) => {
+    poiState.list.forEach((p) => {
       const el = h("div", { class: "pin", style: `--c:${C.color}`, title: p.name }, h("div", { class: "head" }), h("div", { class: "glyph" }, svg(C.ico)), h("div", { class: "foot" }), h("div", { class: "lbl" }, p.name), h("div", { class: "rem" }, "\u2248 " + fmtDist(p.dist)));
       el.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -1231,7 +1635,7 @@
   function renderPOIList() {
     if (!poiState) return;
     const C = CATS[poiState.cat];
-    const items = poiState.list.map((p, i) => h("button", { class: "item", style: `--c:${C.color}`, on: { click: () => selectPOI(p) } }, h("div", { class: "pic" }, svg(C.ico)), h("div", { class: "tx" }, h("b", {}, p.name), h("small", {}, p.sub)), h("div", { class: "dd" }, fmtDist(p.dist))));
+    const items = poiState.list.map((p) => h("button", { class: "item", style: `--c:${C.color}`, on: { click: () => selectPOI(p) } }, h("div", { class: "pic" }, svg(C.ico)), h("div", { class: "tx" }, h("b", {}, p.name), h("small", {}, p.sub)), h("div", { class: "dd" }, fmtDist(p.dist))));
     showSheet(h(
       "div",
       {},
@@ -1240,42 +1644,27 @@
         hideSheet();
       } } }, svg("i-close"))),
       poiState.list.length ? h("div", { class: "list" }, items) : h("p", { class: "note" }, `\u0644\u0627 \u062A\u0648\u062C\u062F \u0623\u0645\u0627\u0643\u0646 \u0636\u0645\u0646 ${fmtDist(poiState.radius)}.`),
-      h("p", { class: "note" }, `\u0627\u0644\u0645\u0633\u0627\u0641\u0627\u062A \u0628\u062E\u0637 \u0645\u0633\u062A\u0642\u064A\u0645 \u0636\u0645\u0646 ${fmtDist(poiState.radius)} \u2014 \u062A\u062A\u062D\u0648\u0644 \u0625\u0644\u0649 \u0645\u0633\u0627\u0641\u0629 \u0627\u0644\u0637\u0631\u064A\u0642 \u0639\u0646\u062F \u0627\u062E\u062A\u064A\u0627\u0631 \u0627\u0644\u0645\u0643\u0627\u0646. \xA9 OpenStreetMap`)
+      h("p", { class: "note" }, `\u0627\u0644\u0645\u0633\u0627\u0641\u0627\u062A \u0628\u062E\u0637 \u0645\u0633\u062A\u0642\u064A\u0645 \u0636\u0645\u0646 ${fmtDist(poiState.radius)} \u2014 \u062A\u062A\u062D\u0648\u0644 \u0625\u0644\u0649 \u0645\u0633\u0627\u0641\u0629 \u0627\u0644\u0637\u0631\u064A\u0642 \u0639\u0646\u062F \u0627\u0644\u0627\u062E\u062A\u064A\u0627\u0631. \xA9 OpenStreetMap`)
     ));
   }
-  async function selectPOI(p) {
-    selPOI = p;
+  function selectPOI(p) {
     for (const q of poiState.list) q.el && q.el.classList.toggle("sel", q === p);
-    map.flyTo({ center: [p.lng, p.lat], zoom: Math.max(map.getZoom(), 16), pitch: 60, duration: 900 });
-    dest = { lng: p.lng, lat: p.lat, name: p.name, sub: p.sub };
-    setMarkerKeep();
-    const ok = await computeRoute(false);
-    if (ok && p.el) {
-      const rem = p.el.querySelector(".rem");
-      if (rem) rem.textContent = fmtDist(route.dist);
-    }
+    dest = { lng: p.lng, lat: p.lat, name: p.name, sub: p.sub, type: CATS[poiState.cat].label };
+    setMarker();
+    map.flyTo({ center: [p.lng, p.lat], zoom: Math.max(map.getZoom(), 16), pitch: 60, duration: 800, padding: { top: 0, bottom: Math.round(innerHeight * 0.3), left: 0, right: 0 } });
+    renderPlace();
   }
-  function setMarkerKeep() {
-    if (destMarker) {
-      destMarker.remove();
-      destMarker = null;
-    }
-  }
-  function openModal(id) {
-    N[id].classList.remove("hide");
-  }
-  function closeModals() {
+  var openModal = (id) => N[id].classList.remove("hide");
+  var closeModals = () => {
     for (const m of $$(".modal")) m.classList.add("hide");
-  }
-  function row(title, sub, ctrl) {
-    return h("div", { class: "set" }, h("label", {}, title, sub ? h("small", {}, sub) : null), ctrl);
-  }
+  };
+  var row = (title, sub, ctrl) => h("div", { class: "set" }, h("label", {}, title, sub ? h("small", {}, sub) : null), ctrl);
   function toggle(key, on) {
     const i = h("input", { type: "checkbox", class: "sw" });
     i.checked = !!ST[key];
     i.addEventListener("change", () => {
       ST[key] = i.checked;
-      save("mp_settings_v1", ST);
+      save("mp_settings_v2", ST);
       on && on(i.checked);
     });
     return i;
@@ -1289,7 +1678,7 @@
       }));
       s.addEventListener("change", () => {
         ST[key] = typeof DEF[key] === "number" ? +s.value : s.value;
-        save("mp_settings_v1", ST);
+        save("mp_settings_v2", ST);
         on && on();
       });
       return s;
@@ -1301,38 +1690,35 @@
       row("\u0627\u0644\u0645\u0628\u0627\u0646\u064A \u062B\u0644\u0627\u062B\u064A\u0629 \u0627\u0644\u0623\u0628\u0639\u0627\u062F", "\u0625\u0638\u0647\u0627\u0631 \u0627\u0631\u062A\u0641\u0627\u0639\u0627\u062A \u0627\u0644\u0645\u0628\u0627\u0646\u064A", toggle("buildings", (v) => {
         for (const l of map.getStyle().layers) if (l.type === "fill-extrusion" && !OWN.has(l.id) || l.id === "mp-buildings") map.setLayoutProperty(l.id, "visibility", v ? "visible" : "none");
       })),
-      row("\u062A\u0636\u0627\u0631\u064A\u0633 \u0627\u0644\u0623\u0631\u0636 3D", "\u064A\u0633\u062A\u0647\u0644\u0643 \u0628\u064A\u0627\u0646\u0627\u062A \u0648\u0628\u0637\u0627\u0631\u064A\u0629 \u0623\u0643\u062B\u0631", toggle("terrain", () => {
-        setupTerrainOnly();
-      })),
+      row("\u062A\u0636\u0627\u0631\u064A\u0633 \u0627\u0644\u0623\u0631\u0636 3D", "\u064A\u0633\u062A\u0647\u0644\u0643 \u0628\u064A\u0627\u0646\u0627\u062A \u0648\u0628\u0637\u0627\u0631\u064A\u0629 \u0623\u0643\u062B\u0631 \u2014 \u0623\u0648\u0642\u0641\u0647 \u0644\u0648 \u0634\u0639\u0631\u062A \u0628\u0628\u0637\u0621", toggle("terrain", () => setupTerrainOnly())),
       row("\u0627\u062A\u062C\u0627\u0647 \u0627\u0644\u062E\u0631\u064A\u0637\u0629 \u0645\u0639 \u0627\u0644\u0633\u064A\u0631", "\u062A\u062F\u0648\u064A\u0631 \u0627\u0644\u062E\u0631\u064A\u0637\u0629 \u062D\u0633\u0628 \u0627\u062A\u062C\u0627\u0647 \u0627\u0644\u062D\u0631\u0643\u0629", toggle("headingUp")),
       row("\u0646\u0645\u0637 \u0627\u0644\u062E\u0631\u064A\u0637\u0629", null, sel("style", [["liberty", "\u0642\u064A\u0627\u0633\u064A"], ["bright", "\u0632\u0627\u0647\u064D"], ["positron", "\u0641\u0627\u062A\u062D \u0647\u0627\u062F\u0626"]], async () => {
         map.setStyle(await loadStyle(ST.style));
       })),
       row("\u0646\u0637\u0627\u0642 \u0627\u0644\u0628\u062D\u062B \u0639\u0646 \u0627\u0644\u0623\u0645\u0627\u0643\u0646", null, sel("radius", [[1e3, "1 \u0643\u0645"], [2e3, "2 \u0643\u0645"], [5e3, "5 \u0643\u0645"]])),
+      row("\u0627\u0644\u062A\u062D\u062F\u064A\u062B\u0627\u062A", "\u0627\u0644\u0625\u0635\u062F\u0627\u0631 " + APP_VERSION, h("button", { class: "ghost", style: "flex:none;min-height:40px", on: { click: checkUpdate } }, "\u062A\u062D\u062F\u064A\u062B \u0627\u0644\u0622\u0646")),
       row("\u0645\u0633\u062D \u0627\u0644\u062A\u062E\u0632\u064A\u0646 \u0627\u0644\u0645\u0624\u0642\u062A", "\u062D\u0630\u0641 \u0627\u0644\u062E\u0631\u0627\u0626\u0637 \u0627\u0644\u0645\u062D\u0641\u0648\u0638\u0629 \u0644\u0644\u0639\u0645\u0644 \u062F\u0648\u0646 \u0625\u0646\u062A\u0631\u0646\u062A", h("button", { class: "ghost", style: "flex:none;min-height:40px", on: { click: async () => {
         try {
-          for (const k of await caches.keys()) await caches.delete(k);
-          toast("\u062A\u0645 \u0645\u0633\u062D \u0627\u0644\u062A\u062E\u0632\u064A\u0646 \u0627\u0644\u0645\u0624\u0642\u062A");
+          for (const k of await caches.keys()) if (!/shell/.test(k)) await caches.delete(k);
+          toast("\u062A\u0645 \u0645\u0633\u062D \u062E\u0631\u0627\u0626\u0637 \u0627\u0644\u062A\u062E\u0632\u064A\u0646 \u0627\u0644\u0645\u0624\u0642\u062A");
         } catch (e) {
           toast("\u062A\u0639\u0630\u0651\u0631 \u0627\u0644\u0645\u0633\u062D");
         }
       } } }, "\u0645\u0633\u062D")),
-      h("p", { class: "hint" }, "\u0627\u0644\u0628\u064A\u0627\u0646\u0627\u062A: \xA9 \u0645\u0633\u0627\u0647\u0645\u0648 OpenStreetMap \xB7 \u062E\u0631\u0627\u0626\u0637 OpenFreeMap (OpenMapTiles) \xB7 \u0627\u0644\u0645\u0633\u0627\u0631\u0627\u062A OSRM \xB7 \u0627\u0644\u0623\u0645\u0627\u0643\u0646 Overpass \xB7 \u0627\u0644\u0628\u062D\u062B Nominatim \xB7 \u0627\u0644\u062E\u0631\u064A\u0637\u0629 MapLibre GL JS.")
+      h("p", { class: "hint" }, "\u0627\u0644\u0628\u064A\u0627\u0646\u0627\u062A: \xA9 \u0645\u0633\u0627\u0647\u0645\u0648 OpenStreetMap \xB7 \u062E\u0631\u0627\u0626\u0637 OpenFreeMap (OpenMapTiles) \xB7 \u0627\u0644\u0645\u0633\u0627\u0631\u0627\u062A OSRM \xB7 \u0627\u0644\u0623\u0645\u0627\u0643\u0646 Overpass \xB7 \u0627\u0644\u0628\u062D\u062B Photon/Nominatim \xB7 \u0627\u0644\u062E\u0631\u064A\u0637\u0629 MapLibre GL JS. \u0627\u0644\u0627\u0632\u062F\u062D\u0627\u0645 \u062A\u0642\u062F\u064A\u0631\u064A \u0648\u0644\u064A\u0633 \u0645\u0628\u0627\u0634\u0631\u0627\u064B.")
     );
   }
   function setupTerrainOnly() {
     try {
       if (ST.terrain) {
         if (!map.getSource("dem")) map.addSource("dem", { type: "raster-dem", tiles: [DEM], encoding: "terrarium", tileSize: 256, maxzoom: 14 });
-        map.setTerrain({ source: "dem", exaggeration: 1.15 });
+        map.setTerrain({ source: "dem", exaggeration: 1.2 });
       } else map.setTerrain(null);
     } catch (e) {
     }
   }
-  var appURL = () => location.href.split("#")[0];
-  function standalone() {
-    return matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
-  }
+  var appURL = () => location.href.split("#")[0].split("?")[0];
+  var standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
   function openInstall() {
     openModal("mInstall");
     N.doInstall.classList.toggle("hide", !deferredInstall);
@@ -1353,7 +1739,7 @@
     }
   }
   async function doShare() {
-    const data = { title: "\u0645\u0633\u0627\u0631 3D", text: "\u062E\u0631\u0627\u0626\u0637 \u0648\u0645\u0644\u0627\u062D\u0629 \u062B\u0644\u0627\u062B\u064A\u0629 \u0627\u0644\u0623\u0628\u0639\u0627\u062F \u0628\u062A\u0648\u062C\u064A\u0647 \u0635\u0648\u062A\u064A \u0639\u0631\u0628\u064A", url: appURL() };
+    const data = { title: "\u0645\u0633\u0627\u0631\u064A", text: "\u062E\u0631\u0627\u0626\u0637 \u0648\u0645\u0644\u0627\u062D\u0629 \u062B\u0644\u0627\u062B\u064A\u0629 \u0627\u0644\u0623\u0628\u0639\u0627\u062F \u0628\u062A\u0648\u062C\u064A\u0647 \u0635\u0648\u062A\u064A \u0639\u0631\u0628\u064A", url: appURL() };
     if (navigator.share) {
       try {
         await navigator.share(data);
@@ -1385,8 +1771,71 @@
     sp.textContent = ok ? "\u062A\u0645 \u0627\u0644\u0646\u0633\u062E \u2713" : "\u0627\u0646\u0633\u062E \u064A\u062F\u0648\u064A\u0627\u064B: " + url;
     setTimeout(() => sp.textContent = "\u0646\u0633\u062E \u0627\u0644\u0631\u0627\u0628\u0637", 2500);
   }
+  function offerUpdate() {
+    if ($("#updBar")) return;
+    const bar = h(
+      "div",
+      { id: "updBar", class: "upd", role: "alert" },
+      svg("i-refresh"),
+      h("div", { class: "ut" }, h("b", {}, "\u064A\u062A\u0648\u0641\u0631 \u062A\u062D\u062F\u064A\u062B \u062C\u062F\u064A\u062F"), h("small", {}, "\u062D\u062F\u0651\u062B \u0644\u0644\u062D\u0635\u0648\u0644 \u0639\u0644\u0649 \u0623\u062D\u062F\u062B \u0627\u0644\u0645\u064A\u0632\u0627\u062A")),
+      h("button", { class: "primary", on: { click: applyUpdate } }, "\u062A\u062D\u062F\u064A\u062B \u0627\u0644\u0622\u0646"),
+      h("button", { class: "ghost", on: { click: () => {
+        bar.remove();
+        toast("\u064A\u0645\u0643\u0646\u0643 \u0627\u0644\u062A\u062D\u062F\u064A\u062B \u0644\u0627\u062D\u0642\u0627\u064B \u0645\u0646 \u0627\u0644\u0625\u0639\u062F\u0627\u062F\u0627\u062A", 4e3);
+      } } }, "\u0625\u0644\u063A\u0627\u0621")
+    );
+    document.body.append(bar);
+  }
+  function applyUpdate() {
+    const w = swReg && swReg.waiting;
+    if (!w) {
+      location.reload();
+      return;
+    }
+    updating = true;
+    w.postMessage({ type: "SKIP_WAITING" });
+    setTimeout(() => location.reload(), 2500);
+  }
+  async function checkUpdate() {
+    if (!swReg) {
+      toast("\u0627\u0644\u062A\u062D\u062F\u064A\u062B \u063A\u064A\u0631 \u0645\u062A\u0627\u062D \u0641\u064A \u0647\u0630\u0627 \u0627\u0644\u0645\u062A\u0635\u0641\u062D");
+      return;
+    }
+    toast("\u062C\u0627\u0631\u064D \u0627\u0644\u0628\u062D\u062B \u0639\u0646 \u062A\u062D\u062F\u064A\u062B\u2026", 2e3);
+    try {
+      await swReg.update();
+    } catch (e) {
+    }
+    await sleep(1500);
+    if (swReg.waiting) offerUpdate();
+    else if (!swReg.installing) toast("\u0623\u0646\u062A \u062A\u0633\u062A\u062E\u062F\u0645 \u0623\u062D\u062F\u062B \u0625\u0635\u062F\u0627\u0631 \u2713");
+  }
+  function initSW() {
+    if (!("serviceWorker" in navigator)) return;
+    const reg = () => navigator.serviceWorker.register("sw.js").then((r) => {
+      swReg = r;
+      if (r.waiting && navigator.serviceWorker.controller) offerUpdate();
+      r.addEventListener("updatefound", () => {
+        const w = r.installing;
+        w && w.addEventListener("statechange", () => {
+          if (w.state === "installed" && navigator.serviceWorker.controller) offerUpdate();
+        });
+      });
+      r.update().catch(() => {
+      });
+    }).catch(() => {
+    });
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (updating) location.reload();
+    });
+    document.readyState === "complete" ? reg() : addEventListener("load", reg);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && swReg) swReg.update().catch(() => {
+      });
+    });
+  }
   function wire() {
-    N.q.addEventListener("input", debounce(doSearch, 650));
+    N.q.addEventListener("input", debounce(doSearch, 200));
     N.q.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -1428,7 +1877,8 @@
       northOnly = false;
       map.flyTo({ center: c, zoom: 15.2, pitch: 60, bearing: 0, duration: 1100 });
     });
-    N.bPitch.addEventListener("click", () => map.easeTo({ pitch: map.getPitch() > 10 ? 0 : 60, duration: 600 }));
+    N.bPitch.addEventListener("click", () => map.easeTo({ pitch: map.getPitch() > 10 ? 0 : 62, duration: 600 }));
+    N.bHazard.addEventListener("click", reportHazard);
     N.bCompass.addEventListener("click", () => {
       if (Math.abs(angDiff(map.getBearing(), 0)) > 2) {
         northOnly = true;
@@ -1445,14 +1895,14 @@
     N.hudStop.addEventListener("click", () => stopNav(false));
     N.hudVol.addEventListener("click", () => {
       ST.voice = !ST.voice;
-      save("mp_settings_v1", ST);
+      save("mp_settings_v2", ST);
       setVolIcon();
       if (!ST.voice) {
         try {
           speechSynthesis.cancel();
         } catch (e) {
         }
-      } else if (nav.said) speak(nav.said);
+      }
     });
     N.bSettings.addEventListener("click", () => {
       renderSettings();
@@ -1494,9 +1944,7 @@
     });
     const user = (e) => !!e.originalEvent;
     map.on("dragstart", (e) => {
-      if (user(e) && follow) {
-        setFollow(false);
-      }
+      if (user(e) && follow) setFollow(false);
     });
     map.on("rotatestart", (e) => {
       if (user(e) && follow && !navActive) setFollow(false);
@@ -1504,75 +1952,34 @@
     map.on("rotate", () => {
       N.bCompass.firstChild.style.transform = `rotate(${-map.getBearing()}deg)`;
     });
-    map.on("contextmenu", (e) => askDest(e.lngLat));
-    const cv = map.getCanvas();
-    let lp = null, lpXY = null;
-    cv.addEventListener("touchstart", (e) => {
-      if (e.touches.length !== 1) {
-        clearTimeout(lp);
-        return;
-      }
-      const t = e.touches[0];
-      lpXY = [t.clientX, t.clientY];
-      clearTimeout(lp);
-      lp = setTimeout(() => {
-        const r = cv.getBoundingClientRect();
-        askDest(map.unproject([t.clientX - r.left, t.clientY - r.top]));
-      }, 700);
-    }, { passive: true });
-    cv.addEventListener("touchmove", (e) => {
-      const t = e.touches[0];
-      if (lpXY && t && Math.hypot(t.clientX - lpXY[0], t.clientY - lpXY[1]) > 10) clearTimeout(lp);
-    }, { passive: true });
-    cv.addEventListener("touchend", () => clearTimeout(lp), { passive: true });
-    cv.addEventListener("touchcancel", () => clearTimeout(lp), { passive: true });
-  }
-  async function askDest(ll) {
-    const d = { lng: ll.lng, lat: ll.lat, name: "\u0645\u0648\u0642\u0639 \u0645\u062D\u062F\u062F \u0639\u0644\u0649 \u0627\u0644\u062E\u0631\u064A\u0637\u0629" };
-    try {
-      const r = await timeoutFetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=17&accept-language=ar,en&lat=${ll.lat}&lon=${ll.lng}`, {}, 6e3);
-      if (r.ok) {
-        const j = await r.json();
-        if (j && j.display_name) {
-          const p = j.display_name.split(",");
-          d.name = (j.name || p[0] || d.name).trim();
-          d.sub = p.slice(1, 3).join("\u060C").trim();
-        }
-      }
-    } catch (e) {
-    }
-    setDestination(d);
+    map.on("click", mapClick);
   }
   async function boot() {
-    const style = await loadStyle(ST.style);
+    const sp = loadStyle(ST.style);
+    const style = await sp;
     const c = lastPos ? [lastPos.lng, lastPos.lat] : FALLBACK_CENTER;
-    map = new maplibregl.Map({ container: "map", style, center: c, zoom: lastPos ? 15.5 : 13, pitch: 60, bearing: -12, maxPitch: 80, attributionControl: false, antialias: devicePixelRatio < 2, fadeDuration: 120, pixelRatio: Math.min(devicePixelRatio || 1, 2), dragRotate: true, touchPitch: true });
+    map = new maplibregl.Map({ container: "map", style, center: c, zoom: lastPos ? 15.6 : 13, pitch: 62, bearing: -12, maxPitch: 85, attributionControl: false, antialias: !lowEnd && devicePixelRatio < 2, fadeDuration: 0, pixelRatio: Math.min(devicePixelRatio || 1, lowEnd ? 1.5 : 2), dragRotate: true, touchPitch: true, maxTileCacheSize: 200, cancelPendingTileRequestsWhileZooming: true });
     map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: "\xA9 OpenStreetMap \xB7 OpenFreeMap \xB7 OSRM" }), "bottom-left");
-    map.on("style.load", setupLayers);
+    map.on("style.load", () => {
+      setupLayers();
+      drawHazards();
+    });
     map.on("error", (e) => {
       if (e && e.error && /Failed to fetch|NetworkError|AJAXError/i.test(String(e.error.message || e.error))) setStatus(navigator.onLine ? "\u062A\u0639\u0630\u0651\u0631 \u062A\u062D\u0645\u064A\u0644 \u0628\u0639\u0636 \u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u062E\u0631\u064A\u0637\u0629" : "\u0628\u062F\u0648\u0646 \u0625\u0646\u062A\u0631\u0646\u062A \u2014 \u062A\u0638\u0647\u0631 \u0627\u0644\u062E\u0631\u0627\u0626\u0637 \u0627\u0644\u0645\u062E\u0632\u0646\u0629 \u0641\u0642\u0637");
     });
     wire();
     requestAnimationFrame(loop);
     window.__mp = { map, me, vis, nav, get state() {
-      return { follow, navActive, simOn, dest, route, poiState };
-    }, handleFix, startGPS, setDestination, showPOI };
-    if (navigator.permissions && navigator.permissions.query) {
-      try {
-        const p = await navigator.permissions.query({ name: "geolocation" });
-        if (p.state === "granted") startGPS();
-        p.onchange = () => {
-          if (p.state === "granted") startGPS();
-        };
-      } catch (e) {
-      }
-    }
+      return { follow, navActive, simOn, dest, route, mode, routes, poiState };
+    }, handleFix, startGPS, showPlace, chooseMode, applyMode, showPOI, mapClick, reportHazard, offerUpdate };
+    startGPS();
     if (!navigator.onLine) setStatus("\u0628\u062F\u0648\u0646 \u0625\u0646\u062A\u0631\u0646\u062A \u2014 \u062A\u0638\u0647\u0631 \u0627\u0644\u062E\u0631\u0627\u0626\u0637 \u0627\u0644\u0645\u062E\u0632\u0646\u0629 \u0641\u0642\u0637");
-    if ("serviceWorker" in navigator) {
-      const reg = () => navigator.serviceWorker.register("sw.js").catch(() => {
-      });
-      document.readyState === "complete" ? reg() : addEventListener("load", reg);
+    const ll = params.get("ll");
+    if (ll) {
+      const [a, b] = ll.split(",").map(Number);
+      if (isFinite(a) && isFinite(b)) map.once("load", () => showPlace({ lat: a, lng: b, name: params.get("n") || "\u0645\u0648\u0642\u0639 \u0645\u0634\u0627\u0631\u064E\u0643" }, true));
     }
+    initSW();
   }
   boot();
 })();

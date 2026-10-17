@@ -2,21 +2,24 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="utf-8">
-<title>مسار 3D — خرائط وملاحة ثلاثية الأبعاد</title>
+<title>مساري — خرائط وملاحة ثلاثية الأبعاد</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="description" content="خرائط وملاحة GPS ثلاثية الأبعاد بمبانٍ وتضاريس وتوجيه صوتي عربي، تعمل كتطبيق مستقل.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://tiles.openfreemap.org https://s3.amazonaws.com https://router.project-osrm.org https://nominatim.openstreetmap.org https://overpass-api.de https://overpass.kumi.systems https://overpass.private.coffee; worker-src 'self' blob:; child-src blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://routing.openstreetmap.de https://photon.komoot.io https://tiles.openfreemap.org https://s3.amazonaws.com https://router.project-osrm.org https://nominatim.openstreetmap.org https://overpass-api.de https://overpass.kumi.systems https://overpass.private.coffee; worker-src 'self' blob:; child-src blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
 <meta name="theme-color" content="#0b1220">
 <meta name="color-scheme" content="dark light">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="مسار 3D">
-<meta name="application-name" content="مسار 3D">
+<meta name="apple-mobile-web-app-title" content="مساري">
+<meta name="application-name" content="مساري">
 <meta name="format-detection" content="telephone=no">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon.png">
+<link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
+<link rel="preconnect" href="https://photon.komoot.io" crossorigin>
+<link rel="preconnect" href="https://routing.openstreetmap.de" crossorigin>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap">
@@ -66,6 +69,12 @@
   <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M8.4 18H15a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h6.6"/></symbol>
   <symbol id="i-car" viewBox="0 0 24 24"><path class="soft" d="M4.5 15v-3l2-5h11l2 5v3z"/><path d="M4.5 15v-3l2-5h11l2 5v3zM4.5 12h15"/><circle cx="8" cy="16.6" r="1.6"/><circle cx="16" cy="16.6" r="1.6"/></symbol>
   <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21.5s7-6.1 7-11.6A7 7 0 0 0 5 9.9c0 5.5 7 11.6 7 11.6z" class="soft"/><path d="M12 21.5s7-6.1 7-11.6A7 7 0 0 0 5 9.9c0 5.5 7 11.6 7 11.6z"/><circle cx="12" cy="9.8" r="2.6"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path class="soft" d="M12 4 21 19.5H3z"/><path d="M12 4 21 19.5H3zM12 10v4.4"/><circle cx="12" cy="16.9" r=".8" class="dot"/></symbol>
+  <symbol id="i-walk" viewBox="0 0 24 24"><circle cx="13" cy="4.6" r="1.9" class="soft"/><circle cx="13" cy="4.6" r="1.9"/><path d="M10.6 21l1.6-6.2-2.4-2.2.9-5 3.1 1.2 2.2 3.2M9.8 8.4 7.4 12M12.2 14.8l2.4 2.4.8 3.8"/></symbol>
+  <symbol id="i-bike" viewBox="0 0 24 24"><circle cx="6" cy="16" r="3.6"/><circle cx="18" cy="16" r="3.6"/><path d="M6 16l3.6-7h5.2l3.2 7M9.6 9 12 16h6M8.4 6.4h2.6M14.6 9l-.8-2.6h2"/></symbol>
+  <symbol id="i-moto" viewBox="0 0 24 24"><circle cx="5.6" cy="16.4" r="3.2"/><circle cx="18.4" cy="16.4" r="3.2"/><path class="soft" d="M8.6 16.4h6l-2.2-5.2H9.6z"/><path d="M5.6 16.4 8.4 10h3.8l3 6.4h3.2M14.6 8.4h3.2l.6 2.4M10.4 7.4h2.2"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.6 12a7.6 7.6 0 1 1-2.4-5.5M19.6 4.4v4.3h-4.3"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path class="soft" d="M20.5 3.5 3.5 10.8l6.3 2.4 2.4 6.3z"/><path d="M20.5 3.5 3.5 10.8l6.3 2.4 2.4 6.3zM9.8 13.2l5.2-5"/></symbol>
  </defs>
 </svg>
 
@@ -94,6 +103,7 @@
 <aside id="ctrl">
  <button id="bCompass" class="ibtn" aria-label="اتجاه الشمال"><svg class="ic"><use href="#i-compass"/></svg></button>
  <button id="bPitch" class="ibtn" aria-label="تبديل 2D / 3D"><svg class="ic"><use href="#i-cube"/></svg></button>
+ <button id="bHazard" class="ibtn warnbtn" aria-label="الإبلاغ عن خطر" title="الإبلاغ عن خطر على الطريق"><svg class="ic"><use href="#i-warn"/></svg></button>
  <button id="bHome" class="ibtn" aria-label="الصفحة الرئيسية"><svg class="ic"><use href="#i-home"/></svg></button>
  <button id="bLocate" class="ibtn" aria-label="موقعي"><svg class="ic"><use href="#i-locate"/></svg></button>
 </aside>
@@ -118,7 +128,7 @@
 <!-- ===== install & share ===== -->
 <div id="mInstall" class="modal hide" role="dialog" aria-modal="true" aria-label="تثبيت التطبيق والمشاركة"><div class="card wide">
  <div class="mh"><h2><svg class="ic"><use href="#i-install"/></svg>تثبيت التطبيق والمشاركة</h2><button class="plain" data-close aria-label="إغلاق"><svg class="ic"><use href="#i-close"/></svg></button></div>
- <p class="lead">ثبّت «مسار 3D» ليعمل كتطبيق مستقل بملء الشاشة، بدون شريط المتصفح، ويفتح بسرعة حتى مع ضعف الاتصال.</p>
+ <p class="lead">ثبّت «مساري» ليعمل كتطبيق مستقل بملء الشاشة، بدون شريط المتصفح، ويفتح بسرعة حتى مع ضعف الاتصال.</p>
  <button id="doInstall" class="primary hide"><svg class="ic"><use href="#i-install"/></svg>تثبيت الآن</button>
  <div class="how">
   <article><h3><svg class="ic"><use href="#i-phone"/></svg>الآيفون (iOS Safari)</h3>
