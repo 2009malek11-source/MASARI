@@ -47,8 +47,9 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 #chips button.busy .ic{animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 /* ---- right controls ---- */
-#ctrl{position:absolute;z-index:4;inset-inline-end:calc(12px + var(--sar));bottom:calc(24px + var(--sab));display:flex;flex-direction:column;gap:10px;transition:bottom .25s}
-body.sheetOpen #ctrl{bottom:calc(var(--sheetH,260px) + 16px + var(--sab))}
+#ctrl{position:absolute;z-index:4;inset-inline-end:calc(12px + var(--sar));bottom:calc(24px + var(--sab));display:flex;flex-direction:column;flex-wrap:wrap-reverse;align-content:flex-start;gap:8px;max-height:calc(100vh - 170px - var(--sab));transition:bottom .25s}
+#ctrl .ibtn{width:46px;height:46px;border-radius:15px}#ctrl .ibtn.sep{margin-top:10px}
+body.sheetOpen #ctrl{bottom:calc(var(--sheetH,260px) + 16px + var(--sab));max-height:calc(100vh - 170px - var(--sheetH,260px) - var(--sab))}
 #bCompass .ic{transition:none}
 /* ---- nav HUD ---- */
 #hud{position:absolute;z-index:6;inset-inline:calc(10px + var(--sal)) calc(10px + var(--sar));top:calc(8px + var(--sat));border-radius:22px;background:linear-gradient(160deg,rgba(18,34,70,.94),rgba(10,16,32,.94));border:1px solid var(--line);box-shadow:0 16px 40px rgba(0,0,0,.55);overflow:hidden}
@@ -197,41 +198,46 @@ body.previewing #top,body.previewing #chips,body.previewing #ctrl,body.previewin
 .ibtn,.plain,.tool,.mode{display:grid;place-items:center}.plain{padding:6px}.ibtn .ic,.plain .ic{display:block;margin:auto}
 .mode{display:flex}.tool{display:flex}
 .warnbtn .ic{color:var(--warn)}
-/* ===== cinematic intro ===== */
-#intro{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#04060c;overflow:hidden;transition:opacity .7s ease,transform .7s ease,filter .7s;direction:rtl}
-#intro.out{opacity:0;transform:scale(1.12);filter:blur(6px);pointer-events:none}
-#intro *{pointer-events:none}#intro #introSkip{pointer-events:auto}
-.in-glow{position:absolute;inset:-20%;background:radial-gradient(circle at 50% 46%,rgba(45,140,255,.35),rgba(25,211,176,.12) 35%,transparent 62%);opacity:0}
-.in-floor{position:absolute;left:-50%;right:-50%;bottom:-8%;height:62%;background-image:linear-gradient(rgba(67,176,255,.35) 1px,transparent 1px),linear-gradient(90deg,rgba(67,176,255,.35) 1px,transparent 1px);background-size:54px 54px;transform:perspective(420px) rotateX(68deg);transform-origin:50% 100%;-webkit-mask-image:linear-gradient(transparent,#000 60%);mask-image:linear-gradient(transparent,#000 60%);opacity:0}
-.in-route{position:absolute;width:min(92vw,520px);top:50%;left:50%;transform:translate(-50%,-168%);overflow:visible;opacity:0}
-.in-path0{fill:none;stroke:rgba(255,255,255,.1);stroke-width:7;stroke-linecap:round}
-.in-path{fill:none;stroke:url(#inG);stroke-width:7;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;filter:drop-shadow(0 0 7px rgba(250,204,21,.7))}
-.in-dot{fill:#fff;filter:drop-shadow(0 0 8px #fff)}
-.in-logo{position:relative;width:min(34vw,148px);aspect-ratio:1;border-radius:28%;overflow:hidden;opacity:0;transform:scale(.45);filter:blur(22px);box-shadow:0 0 0 1px rgba(255,255,255,.15),0 20px 80px rgba(45,140,255,.55)}
-.in-logo img{width:100%;height:100%;display:block;object-fit:cover}
-.in-shine{position:absolute;inset:0;background:linear-gradient(105deg,transparent 35%,rgba(255,255,255,.75) 50%,transparent 65%);transform:translateX(-120%)}
+/* ===== cinematic intro (3 s) ===== */
+#intro{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#04060c;overflow:hidden;transition:opacity .4s ease;direction:rtl;pointer-events:auto}
+#intro.out{opacity:0;pointer-events:none}
+#intro *{pointer-events:none}
+.in-glow{position:absolute;inset:-20%;background:radial-gradient(circle at 50% 46%,rgba(45,140,255,.4),rgba(25,211,176,.14) 35%,transparent 62%);opacity:0}
+.in-floor{position:absolute;left:-50%;right:-50%;bottom:-8%;height:62%;background-image:linear-gradient(rgba(67,176,255,.5) 1px,transparent 1px),linear-gradient(90deg,rgba(67,176,255,.5) 1px,transparent 1px);background-size:54px 54px;transform:perspective(420px) rotateX(68deg);transform-origin:50% 100%;-webkit-mask-image:linear-gradient(transparent,#000 60%);mask-image:linear-gradient(transparent,#000 60%);opacity:0}
+.in-route{position:absolute;width:min(92vw,520px);top:50%;left:50%;transform:translate(-50%,-170%);overflow:visible;opacity:0}
+.in-path0{fill:none;stroke:rgba(255,255,255,.12);stroke-width:7;stroke-linecap:round}
+.in-path{fill:none;stroke:url(#inG);stroke-width:7;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1}
+.in-dot{fill:#fff}
+.in-logo{position:relative;z-index:2;width:min(34vw,148px);height:min(34vw,148px);opacity:0;transform:scale(.5)}
+.in-logo img{width:100%;height:100%;display:block;object-fit:cover;border-radius:28%;box-shadow:0 0 0 1px rgba(255,255,255,.18),0 16px 70px rgba(45,140,255,.6)}
+.in-shine{position:absolute;inset:0;border-radius:28%;overflow:hidden;-webkit-mask-image:-webkit-radial-gradient(white,black)}
+.in-shine::after{content:'';position:absolute;inset:0;background:linear-gradient(105deg,transparent 35%,rgba(255,255,255,.8) 50%,transparent 65%);transform:translateX(-120%)}
 .in-title{margin:22px 0 4px;font-size:clamp(40px,12vw,64px);font-weight:800;color:#fff;opacity:0;text-shadow:0 0 30px rgba(67,176,255,.7)}
-.in-tag{margin:0;color:#9fb6dc;font-size:14px;letter-spacing:.06em;opacity:0}
+.in-tag{margin:0;color:#9fb6dc;font-size:14px;opacity:0}
 .in-bar{position:absolute;left:12%;right:12%;bottom:calc(46px + var(--sab));height:3px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden;opacity:0}
 .in-bar i{display:block;height:100%;width:100%;transform:scaleX(0);transform-origin:right;background:linear-gradient(90deg,#43b0ff,#19d3b0)}
-#introSkip{position:absolute;top:calc(14px + var(--sat));inset-inline-start:14px;padding:7px 16px;border-radius:999px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#dbe7ff;font-size:13px;opacity:0}
-#intro.go .in-glow{animation:inGlow 3.2s ease-out forwards}
-#intro.go .in-floor{animation:inFloor 3.2s ease-out forwards}
-#intro.go .in-route{animation:inFade .6s .1s forwards}
-#intro.go .in-path{animation:inDraw 1.9s .5s cubic-bezier(.5,0,.2,1) forwards}
-#intro.go .in-logo{animation:inLogo 1.1s .55s cubic-bezier(.2,.9,.2,1) forwards}
-#intro.go .in-shine{animation:inShine 1.1s 1.55s ease-in-out forwards}
-#intro.go .in-title{animation:inTitle 1s 1.2s cubic-bezier(.2,.9,.2,1) forwards}
-#intro.go .in-tag{animation:inFade .9s 1.8s forwards}
-#intro.go .in-bar{animation:inFade .4s .3s forwards}#intro.go .in-bar i{animation:inBar 3.1s .2s linear forwards}
-#intro.go #introSkip{animation:inFade .5s 1s forwards}
-@keyframes inGlow{0%{opacity:0;transform:scale(.7)}40%{opacity:1}100%{opacity:.8;transform:scale(1.15)}}
-@keyframes inFloor{0%{opacity:0;background-position:0 0}30%{opacity:.8}100%{opacity:.55;background-position:0 160px}}
+#intro.go .in-glow{animation:inGlow 2.6s ease-out forwards}
+#intro.go .in-floor{animation:inFloor 2.6s ease-out forwards}
+#intro.go .in-route{animation:inFade .3s 0s forwards}
+#intro.go .in-path{animation:inDraw 1.3s .15s cubic-bezier(.5,0,.2,1) forwards}
+#intro.go .in-logo{animation:inLogo .6s .1s cubic-bezier(.2,.9,.2,1) forwards}
+#intro.go .in-shine::after{animation:inShine .7s .8s ease-in-out forwards}
+#intro.go .in-title{animation:inTitle .6s .55s cubic-bezier(.2,.9,.2,1) forwards}
+#intro.go .in-tag{animation:inFade .5s 1s forwards}
+#intro.go .in-bar{animation:inFade .2s 0s forwards}#intro.go .in-bar i{animation:inBar 2.9s 0s linear forwards}
+@keyframes inGlow{0%{opacity:0;transform:scale(.7)}35%{opacity:1}100%{opacity:.85;transform:scale(1.15)}}
+@keyframes inFloor{0%{opacity:0;background-position:0 0}25%{opacity:.9}100%{opacity:.6;background-position:0 200px}}
 @keyframes inFade{to{opacity:1}}
 @keyframes inDraw{to{stroke-dashoffset:0}}
-@keyframes inLogo{0%{opacity:0;transform:scale(.45);filter:blur(22px)}100%{opacity:1;transform:scale(1);filter:blur(0)}}
+@keyframes inLogo{0%{opacity:0;transform:scale(.5)}100%{opacity:1;transform:scale(1)}}
 @keyframes inShine{to{transform:translateX(120%)}}
-@keyframes inTitle{0%{opacity:0;filter:blur(12px);transform:translateY(16px) scale(1.3)}100%{opacity:1;filter:blur(0);transform:none}}
+@keyframes inTitle{0%{opacity:0;transform:translateY(16px) scale(1.25)}100%{opacity:1;transform:none}}
 @keyframes inBar{to{transform:scaleX(1)}}
-@media (prefers-reduced-motion:reduce){#intro *{animation-duration:.01s!important;animation-delay:0s!important}}
 .hud-txt span{white-space:normal!important;display:-webkit-box!important;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35}
+@media (prefers-reduced-motion:reduce){#intro *{animation-duration:.01s!important;animation-delay:0s!important}}
+
+/* side buttons: one tidy column; when a sheet is open they become a row just above it */
+body.sheetOpen #ctrl{flex-direction:row;flex-wrap:nowrap;align-content:normal;max-height:none;max-width:calc(100vw - 24px);gap:8px}
+body.sheetOpen #ctrl .ibtn.sep{margin-top:0;margin-inline-start:6px}
+#ctrl .ibtn{width:44px;height:44px;border-radius:14px}
+@media (min-width:900px){body.sheetOpen #ctrl{flex-direction:column;flex-wrap:wrap-reverse;max-height:calc(100vh - 170px)}body.sheetOpen #ctrl .ibtn.sep{margin-top:10px;margin-inline-start:0}}

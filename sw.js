@@ -3,7 +3,7 @@
  * - Map tiles / styles / fonts are cached at runtime.
  * - A NEW version waits until the user taps "تحديث الآن" (app.js posts SKIP_WAITING).
  * To publish an update: change VERSION below, then upload the files. */
-const VERSION='3.0.0';
+const VERSION='3.1.0';
 const SHELL='mp-shell-'+VERSION,TILES='mp-tiles-v2';
 const FILES=['./','index.html','style.css','app.js','maplibre-gl.js','maplibre-gl.css','manifest.json','icon.png','icon-192.png','icon-maskable.png','qr.png'];
 const MAX_TILES=1200;

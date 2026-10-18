@@ -1071,7 +1071,7 @@
 
   // src/main.js
   var maplibregl = window.maplibregl;
-  var APP_VERSION = "3.0";
+  var APP_VERSION = "3.1";
   var lowEnd = (navigator.hardwareConcurrency || 4) <= 4 || (navigator.deviceMemory || 4) <= 2;
   var DEF = { voice: true, buildings: true, terrain: true, style: "liberty", headingUp: true, radius: 2e3, recent: [], perf: "auto", cons: 8, price: 0.15, cur: "\u062F.\u0644" };
   var ST = store("mp_settings_v3", DEF);
@@ -1734,6 +1734,7 @@
     }
     throw new Error("route");
   }
+  var WALK_SPEED = { foot: 1.4, access: 1, bike: 4.1 };
   function buildRoute(j, m, idx = 0) {
     const r = parseOSRM(j, idx);
     if (m === "car" || m === "moto") {
@@ -1741,7 +1742,13 @@
       r.traffic = tr;
       r.freeDur = r.dur;
       r.dur = tr.dur;
-    } else r.traffic = null;
+    } else {
+      r.traffic = null;
+      const sp = WALK_SPEED[m] || 1.4, d = r.dist / sp, k = d / (r.dur || d);
+      r.freeDur = r.dur;
+      r.dur = d;
+      for (const st of r.steps) st.dur *= k;
+    }
     return r;
   }
   async function chooseMode() {
@@ -1784,9 +1791,8 @@
           if (scan && !scan.skipped) {
             for (let i = 1; i < all.length; i++) if (scan.scores[i] < scan.scores[bi] || scan.scores[i] === scan.scores[bi] && all[i].dur < all[bi].dur && false) bi = i;
           }
-          r = all[bi];
+          r = buildRoute(j, "access", bi);
           r.access = scan ? { score: scan.scores[bi], hits: scan.hits[bi], aids: scan.aids[bi], skipped: !!scan.skipped, alts: all.length } : { unknown: true };
-          r.dur *= 1.35;
         } else {
           r = buildRoute(j, m, 0);
         }
@@ -2010,12 +2016,12 @@
     const est = list.map((r, i) => ecoEstimate(r, cl[i] || { up: 0, down: 0 }, { cons: +ST.cons || 8, price: +ST.price || 0.15 }, wind));
     const cur = est[list.indexOf(route) >= 0 ? list.indexOf(route) : 0], bi = est.reduce((b, e, i) => e.liters < est[b].liters ? i : b, 0);
     const L = (v) => v.toFixed(v < 10 ? 2 : 1), C = (v) => (v < 10 ? v.toFixed(2) : v.toFixed(1)) + " " + ST.cur;
-    box.replaceChildren(
+    box.replaceChildren(...[
       h("div", { class: "eco-h" }, svg("i-coin"), h("b", {}, "\u0627\u0644\u0627\u0633\u062A\u0647\u0644\u0627\u0643 \u0648\u0627\u0644\u062A\u0643\u0644\u0641\u0629 \u0627\u0644\u062A\u0642\u062F\u064A\u0631\u064A\u0629")),
       h("div", { class: "eco-r" }, h("span", {}, "\u0648\u0642\u0648\u062F \u2248 " + L(cur.liters) + " \u0644\u062A\u0631"), h("span", {}, "\u0627\u0644\u062A\u0643\u0644\u0641\u0629 \u2248 " + C(cur.cost))),
       h("small", { class: "note" }, (cl[list.indexOf(route) >= 0 ? list.indexOf(route) : 0] ? `\u0635\u0639\u0648\u062F \u2248 ${cur.climb} \u0645` : "\u0627\u0644\u0627\u0631\u062A\u0641\u0627\u0639\u0627\u062A \u063A\u064A\u0631 \u0645\u062A\u0627\u062D\u0629") + (wind ? ` \xB7 \u0631\u064A\u0627\u062D ${Math.round(wind.speed)} \u0643\u0645/\u0633` : "") + ` \xB7 \u0627\u0633\u062A\u0647\u0644\u0627\u0643 \u0627\u0644\u0633\u064A\u0627\u0631\u0629 ${ST.cons} \u0644\u062A\u0631/100\u0643\u0645 (\u063A\u064A\u0651\u0631\u0647 \u0645\u0646 \u0627\u0644\u0625\u0639\u062F\u0627\u062F\u0627\u062A)`),
       list.length > 1 && list[bi] !== route && est[bi].liters < cur.liters * 0.97 ? h("button", { class: "ghost small", on: { click: () => useCandidate(bi) } }, `\u0627\u0644\u0645\u0633\u0627\u0631 \u0627\u0644\u0623\u0648\u0641\u0631: \u064A\u0648\u0641\u0651\u0631 ${C(cur.cost - est[bi].cost)} (${fmtTime(list[bi].dur - route.dur)} \u0641\u0631\u0642)`) : null
-    );
+    ].filter(Boolean));
   }
   function showDeparture() {
     if (!route) return;
@@ -2894,28 +2900,13 @@
   function intro() {
     const el = $("#intro");
     if (!el) return Promise.resolve();
-    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const min = reduce ? 700 : 3300;
-    const t0 = performance.now();
+    el.classList.add("go");
     return new Promise((res) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        el.classList.add("out");
-        setTimeout(() => {
-          el.remove();
-          res();
-        }, 700);
-      };
-      $("#introSkip").addEventListener("click", finish);
-      el.addEventListener("click", finish);
-      el.classList.add("go");
-      setTimeout(finish, min + 4500);
-      intro.ready = () => {
-        const w = Math.max(0, min - (performance.now() - t0));
-        setTimeout(finish, w);
-      };
+      setTimeout(() => el.classList.add("out"), 2600);
+      setTimeout(() => {
+        el.remove();
+        res();
+      }, 3e3);
     });
   }
   function wire() {
@@ -3049,12 +3040,6 @@
       setupLayers();
       drawHazards();
     });
-    map.once("idle", () => {
-      intro.ready && intro.ready();
-    });
-    setTimeout(() => {
-      intro.ready && intro.ready();
-    }, 2500);
     map.on("error", (e) => {
       if (e && e.error && /Failed to fetch|NetworkError|AJAXError/i.test(String(e.error.message || e.error))) setStatus(navigator.onLine ? "\u062A\u0639\u0630\u0651\u0631 \u062A\u062D\u0645\u064A\u0644 \u0628\u0639\u0636 \u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u062E\u0631\u064A\u0637\u0629" : "\u0628\u062F\u0648\u0646 \u0625\u0646\u062A\u0631\u0646\u062A \u2014 \u062A\u0638\u0647\u0631 \u0627\u0644\u062E\u0631\u0627\u0626\u0637 \u0627\u0644\u0645\u062E\u0632\u0646\u0629 \u0641\u0642\u0637");
     });
